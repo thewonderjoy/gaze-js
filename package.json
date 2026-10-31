@@ -1,0 +1,123 @@
+{
+  "name": "@thewonderjoy/gaze-js",
+  "version": "0.1.0",
+  "description": "Gaze JavaScript client: ray()-style debugging for Node, Bun, Deno, browsers and edge runtimes, with a Vite plugin and Vue/React/Svelte adapters. Speaks the Gaze native protocol and the Spatie Ray wire format.",
+  "license": "MIT",
+  "author": "thewonderjoy",
+  "homepage": "https://github.com/thewonderjoy/gaze/tree/main/packages/js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thewonderjoy/gaze.git",
+    "directory": "packages/js"
+  },
+  "bugs": {
+    "url": "https://github.com/thewonderjoy/gaze/issues"
+  },
+  "keywords": [
+    "debug",
+    "ray",
+    "dump",
+    "gaze",
+    "vite-plugin",
+    "vue",
+    "react",
+    "svelte"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "sideEffects": [
+    "./dist/auto.js"
+  ],
+  "main": "./dist/node.js",
+  "module": "./dist/browser.js",
+  "types": "./dist/types/node.d.ts",
+  "unpkg": "./dist/gaze.global.js",
+  "jsdelivr": "./dist/gaze.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/types/node.d.ts",
+      "workerd": "./dist/edge.js",
+      "edge-light": "./dist/edge.js",
+      "browser": "./dist/browser.js",
+      "deno": "./dist/node.js",
+      "bun": "./dist/node.js",
+      "node": "./dist/node.js",
+      "default": "./dist/browser.js"
+    },
+    "./auto": {
+      "types": "./dist/types/auto.d.ts",
+      "default": "./dist/auto.js"
+    },
+    "./vite": {
+      "types": "./dist/types/vite.d.ts",
+      "default": "./dist/vite.js"
+    },
+    "./noop": {
+      "types": "./dist/types/noop.d.ts",
+      "default": "./dist/noop.js"
+    },
+    "./vue": {
+      "types": "./dist/types/adapters/vue.d.ts",
+      "default": "./dist/adapters/vue.js"
+    },
+    "./react": {
+      "types": "./dist/types/adapters/react.d.ts",
+      "default": "./dist/adapters/react.js"
+    },
+    "./svelte": {
+      "types": "./dist/types/adapters/svelte.d.ts",
+      "default": "./dist/adapters/svelte.js"
+    },
+    "./global": "./dist/gaze.global.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsdown && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:e2e": "vitest run --project e2e",
+    "size": "node scripts/size.mjs",
+    "sync-protocol": "node scripts/sync-protocol.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "svelte": ">=5",
+    "vite": ">=6",
+    "vue": ">=3.3"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "ajv": "8.20.0",
+    "react": "19.3.1",
+    "rolldown": "1.2.16",
+    "svelte": "5.57.3",
+    "tsdown": "0.23.1",
+    "typescript": "6.0.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5",
+    "vue": "3.5.44"
+  }
+}
