@@ -60,10 +60,13 @@ export function callerFrames(boundary?: Function, limit = 1): Frame[] {
   set(limit + 10);
   if (E.captureStackTrace && boundary) E.captureStackTrace(h, boundary);
   // The boundary was not on the stack (V8 then returns nothing): fall back to the full stack.
-  if (!h.stack || !/:\d+:\d+/.test(h.stack)) h.stack = new Error().stack;
+  const bounded = !!h.stack && /:\d+:\d+/.test(h.stack);
+  if (!bounded) h.stack = new Error().stack;
   set(old);
   const frames = parseStack(h.stack, limit + 10);
   let i = 0;
-  while (i < frames.length && isOwn(frames[i]!.file)) i++;
+  // Bundled into one file with other code (a Next.js or webpack chunk: no dist/ or src/ folder of our
+  // own), that file is the caller's too, so after a boundary capture nothing is skipped by file.
+  if (own || !bounded) while (i < frames.length && isOwn(frames[i]!.file)) i++;
   return frames.slice(i, i + limit);
 }

@@ -2,7 +2,7 @@
 // returns a chainable `Ray`. Every method returns `this` synchronously except pass(), counterValue(),
 // pause(), die() and the static flush()/capture(). Chained modifiers on an entry that has not been
 // sent yet are folded into it, so `ray(x).blue().label('a')` is one entry in one request.
-import { Client, hint, isLoopback, now, type Encoder, type Platform } from './client.js';
+import { Client, hint, isLoopback, now, type Encoder, type Platform, type Scope } from './client.js';
 import { traceId, uuid7 } from './ids.js';
 import { className, plain, serialize, str } from './serialize.js';
 import { callerFrames, parseStack } from './stack.js';
@@ -81,19 +81,21 @@ export class RateLimiter {
 }
 
 const fp = (o?: Origin): string => (o ? `${o.file}:${o.line}:${o.col}` : '?');
+const nop = (): void => {};
 const one = (v: Value[]): Value => (v.length == 1 ? v[0]! : { k: 'list', count: v.length, items: v });
 
-function errBody(err: unknown, ser: (v: unknown) => Value, meta?: unknown, depth = 0): Record<string, unknown> {
+function errBody(err: unknown, ser: (v: unknown) => Value, meta?: unknown, depth = 0, map?: (f: Frame) => Frame): Record<string, unknown> {
   const e = err instanceof Error ? (err as Error & { cause?: unknown; code?: unknown; errors?: unknown }) : undefined;
+  const frames = e ? parseStack(e.stack) : [];
   const body: Record<string, unknown> = e
-    ? { class: String(e.name || className(e)), message: String(e.message), frames: parseStack(e.stack) }
+    ? { class: String(e.name || className(e)), message: String(e.message), frames: map ? frames.map((f) => (f.vendor ? f : map(f))) : frames }
     : { class: typeof err, message: typeof err == 'object' ? JSON.stringify(plain(ser(err))) : String(err), frames: [] };
   const ctx: Record<string, unknown> = {};
   if (e) {
     if (typeof e.code == 'string' || Number.isInteger(e.code)) body.code = e.code;
     if ('cause' in e) {
       ctx.cause = e.cause;
-      if (e.cause instanceof Error && depth < 5) body.previous = errBody(e.cause, ser, undefined, depth + 1);
+      if (e.cause instanceof Error && depth < 5) body.previous = errBody(e.cause, ser, undefined, depth + 1, map);
     }
     if (Array.isArray(e.errors)) ctx.errors = e.errors;
   }
@@ -430,11 +432,18 @@ export class Ray {
   /** Error with its own stack (err.stack), cause chain and AggregateError members, coloured red. */
   exception(err: unknown, meta?: Record<string, unknown>): this {
     if (!this.#live()) return this;
-    return this.$emit('exception', errBody(err, this.#ser, meta)).red();
+    return this.$emit('exception', errBody(err, this.#ser, meta, 0, this.#s.c.p.mapFrame)).red();
   }
-  /** Stopwatch by name (first call starts it), or time a (sync or async) function. */
+  /** Stopwatch by name (first call starts it), or time a (sync or async) function. Disabled, the function still runs. */
   measure(nameOrFn: string | (() => unknown) = 'default'): this {
-    if (!this.#live()) return this;
+    if (!this.#live()) {
+      if (typeof nameOrFn == 'function') {
+        // As when timed: a throw reaches the caller, a rejection is settled here.
+        const r = nameOrFn() as Promise<unknown> | undefined;
+        if (r && typeof r.then == 'function') r.then(nop, nop);
+      }
+      return this;
+    }
     const mem = this.#s.c.p.mem;
     const m = mem ? mem() : 0;
     const t = now();
@@ -481,8 +490,9 @@ export class Ray {
     if (!(await c.flush())) return 'released';
     return c.lock(this.id);
   }
-  /** Flush, then end the process (Node/Bun/Deno: exit code) or reject (browsers). Await it. */
-  async die(code = 1): Promise<never> {
+  /** Flush, then end the process (Node/Bun/Deno: exit code) or reject (browsers). Await it. Disabled, it does nothing. */
+  async die(code = 1): Promise<void> {
+    if (!this.enabled()) return;
     await this.#s.c.flush();
     const exit = this.#s.c.p.exit;
     if (exit) exit(code);
@@ -517,6 +527,10 @@ export interface CaptureOptions {
   console?: boolean;
   errors?: boolean;
   network?: boolean;
+  /** Node: one trace per incoming HTTP request, closed by a request summary row. */
+  requests?: boolean;
+  /** Node: SQL from pg, mysql2, postgres.js and better-sqlite3, with N+1 folding per trace. */
+  queries?: boolean;
 }
 
 export interface RayFn {
@@ -530,9 +544,9 @@ export interface RayFn {
   /** Send everything queued; resolves when delivered (or the app is unreachable). */
   flush(): Promise<void>;
   configure(options: Options): RayFn;
-  /** Install console / error / network capture; resolves to an uninstall function. */
+  /** Install console / error / network capture; resolves to an uninstall function. Disabled, installs nothing. */
   capture(options?: CaptureOptions): Promise<() => void>;
-  /** Run `fn` as one unit of work: entries carry a shared trace; a summary entry closes it. */
+  /** Run `fn` as one unit of work: entries carry a shared trace; a summary entry closes it. Disabled, just runs `fn`. */
   group<T>(label: string, fn: () => T): T;
   enable(): RayFn;
   disable(): RayFn;
@@ -544,6 +558,8 @@ export interface RayFn {
   macro(name: string, fn: (this: Ray, ...args: any[]) => unknown): RayFn;
   /** @internal A Ray without a call site (events observed outside user code). */
   $bare(): Ray;
+  /** @internal A Ray at a given origin (capture modules pick the app's own frame). */
+  $at(origin?: Origin): Ray;
   /** @internal */
   readonly $client: Client;
 }
@@ -568,7 +584,10 @@ export function createRay(p: Platform, load: Loaders = {}): RayFn {
   };
   const OFF = new Ray(s, undefined, undefined, false, true);
   const live = () => s.on && c.cfg.enabled;
-  const site = (fn: Function): Origin | undefined => (c.cfg.origin ? callerFrames(fn, 1)[0] : undefined);
+  const site = (fn: Function): Origin | undefined => {
+    const f = c.cfg.origin ? callerFrames(fn, 1)[0] : undefined;
+    return f && p.mapFrame ? p.mapFrame(f) : f;
+  };
 
   const ray = function ray(...values: unknown[]): Ray {
     if (!live()) return OFF;
@@ -588,6 +607,7 @@ export function createRay(p: Platform, load: Loaders = {}): RayFn {
       };
     },
     $bare: () => (live() ? new Ray(s) : OFF),
+    $at: (o) => (live() ? new Ray(s, o) : OFF),
     watch: function watch(getter, o = {}) {
       if (!live()) return () => {};
       const r = new Ray(s, site(watch));
@@ -612,29 +632,36 @@ export function createRay(p: Platform, load: Loaders = {}): RayFn {
       (t as { unref?: () => void }).unref?.();
       return () => clearInterval(t);
     },
-    flush: () => c.flush().then(() => {}),
+    flush: () => (live() ? c.flush().then(nop) : Promise.resolve()),
     configure(o) {
       c.configure(o);
       if (o.enabled !== undefined) s.on = o.enabled;
       return ray;
     },
+    // Disabled, nothing is loaded or patched.
     capture(o) {
-      return load.capture ? load.capture().then((m) => m.install(ray, o)) : Promise.resolve(() => {});
+      return load.capture && live() ? load.capture().then((m) => m.install(ray, o)) : Promise.resolve(nop);
     },
     group(label, fn) {
+      if (!live()) return fn();
       const parent = c.trace;
       const t: NonNullable<WireEntry['trace']> = { id: traceId(), kind: 'other', name: String(label), started_at: Date.now() };
       if (parent) t.parent = parent.id;
-      c.trace = t;
+      // With an async context (Node) the group follows its own async work only; without one
+      // (browsers) it is the current trace until it ends.
+      const ctx = c.p.ctx;
+      const scope: Scope = { trace: t };
+      if (!ctx) c.trace = t;
       const t0 = now();
       const end = () => {
-        c.trace = parent;
+        if (!ctx) c.trace = parent;
+        for (const f of c.closers) f(scope);
         if (live())
           c.push({ op: 'add', id: uuid7(), seq: 0, kind: 'group', body: { name: t.name, duration_ms: Math.round((now() - t0) * 1000) / 1000 }, trace: { ...t, ended: true } });
       };
       let r: any;
       try {
-        r = fn();
+        r = ctx ? ctx.run(scope, fn) : fn();
       } catch (e) {
         end();
         throw e;

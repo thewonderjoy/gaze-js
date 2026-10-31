@@ -98,6 +98,12 @@ export interface Options {
   origin?: boolean;
   /** Replace the HTTP transport (e.g. Vite HMR bridge). */
   bridge?: Bridge | null;
+  /**
+   * Origins (e.g. `http://localhost:8000`) that get a W3C `traceparent` on captured fetch/XHR calls,
+   * besides the page's own origin (browsers) or loopback and `*.test` hosts (servers). They must
+   * allow the header in CORS.
+   */
+  propagate?: string[];
   /** Bounded drop-oldest queue while the app is down. Default 500 entries / 5 MB. */
   queue?: { entries?: number; bytes?: number };
 }

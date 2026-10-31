@@ -1,8 +1,11 @@
 // Vite plugin (dev only by default): injects the browser client, bridges its batches over the HMR
-// WebSocket to the app (no CORS, no Local Network Access prompt, works from phones on the LAN), does
-// the GET /v1/hello handshake, sends the project root for URL -> file mapping, optionally rewrites
-// ray() call sites to carry exact file:line:col, and aliases the package to ./noop in builds.
-import { resolve as resolvePath } from 'node:path';
+// WebSocket to the app (no CORS, no Local Network Access prompt, works from phones on the LAN), maps
+// bridged origins and stack frames from served URLs to source files and lines, does the GET /v1/hello
+// handshake, optionally rewrites ray() call sites to carry exact file:line:col, and aliases the
+// package to ./noop in builds.
+import { SourceMap, type SourceMapPayload, type SourceMapping } from 'node:module';
+import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { HtmlTagDescriptor, Plugin, ResolvedConfig, ViteDevServer } from 'vite';
 import { Client } from './core/client.js';
 import { rayEnvelope } from './core/ray-wire.js';
@@ -264,6 +267,108 @@ export async function handshake(c: Client): Promise<string> {
   }
 }
 
+// ---- served URLs -> source files and lines, through the dev server's module graph -----------------
+
+type Loc = { file?: unknown; line?: unknown; col?: unknown };
+const LOOPBACK = ['localhost', '127.0.0.1', '[::1]'];
+
+/** A map source as a path: relative to the module, absolute or file:; undefined for virtual sources. */
+const sourcePath = (s: string, file: string): string | undefined =>
+  s.startsWith('file:')
+    ? fileURLToPath(s).replace(/\\/g, '/')
+    : s.includes('\0') || (!isAbsolute(s) && /^[a-z][\w+.-]*:/i.test(s))
+      ? undefined
+      : resolvePath(dirname(file), s).replace(/\\/g, '/');
+
+/**
+ * Rewrites a native batch's origins and exception / trace frames (with the `previous` chain) from this
+ * dev server's URLs (`http://localhost:5173/src/App.vue`, `/src/App.vue?t=1`) to source paths and
+ * lines. Other URLs, node_modules and unknown modules stay as they are. Never rejects: on any error it
+ * resolves to the body unchanged.
+ */
+function sourceMapper(server: ViteDevServer): (body: string) => Promise<string> {
+  const maps = new Map<string, { tr: unknown; sm?: SourceMap }>();
+  let urls: unknown;
+  let origins = new Set<string>();
+  const own = (): Set<string> => {
+    if (urls === server.resolvedUrls) return origins;
+    urls = server.resolvedUrls;
+    origins = new Set();
+    for (const x of [...(server.resolvedUrls?.local ?? []), ...(server.resolvedUrls?.network ?? []), server.config.server.origin ?? ''])
+      try {
+        const u = new URL(x);
+        origins.add(u.origin);
+        // Browsers may reach a loopback server by another loopback name (Laravel's hot file says [::1]).
+        if (LOOPBACK.includes(u.hostname)) for (const h of LOOPBACK) origins.add(`${u.protocol}//${h}${u.port ? ':' + u.port : ''}`);
+      } catch {}
+    return origins;
+  };
+  /** Root-relative path of a served URL, or undefined when the URL is not this server's. */
+  const served = (file: string): string | undefined => {
+    let p = file;
+    if (!p.startsWith('/') || p.startsWith('//'))
+      try {
+        const u = new URL(p);
+        if (!own().has(u.origin)) return;
+        p = u.pathname;
+      } catch {
+        return;
+      }
+    p = p.replace(/[?#].*$/, '');
+    try {
+      p = decodeURI(p);
+    } catch {}
+    // Absolute paths under the root (POSIX call sites, vite:error) are files already.
+    return p.includes('/node_modules/') || p.startsWith(server.config.root + '/') ? undefined : p;
+  };
+  const lookup = async (p: string) => {
+    const mod = await server.environments?.client?.moduleGraph.getModuleByUrl(p);
+    if (!mod?.file || mod.file == p || mod.file.includes('/node_modules/')) return;
+    const key = mod.id ?? mod.url;
+    const tr = mod.transformResult;
+    let c = maps.get(key);
+    // A new transform (HMR) replaces the cached map; an invalidated module keeps the one the page runs.
+    if (!c || (tr && c.tr !== tr)) {
+      let sm: SourceMap | undefined;
+      try {
+        if (tr?.map?.mappings) sm = new SourceMap(tr.map as unknown as SourceMapPayload);
+      } catch {}
+      maps.set(key, (c = { tr, sm }));
+    }
+    return { file: mod.file, sm: c.sm };
+  };
+  const at = async (f: Loc): Promise<boolean> => {
+    const p = f && typeof f == 'object' && typeof f.file == 'string' ? served(f.file) : undefined;
+    const m = p && (await lookup(p));
+    if (!m) return false;
+    f.file = m.file;
+    if (!m.sm || typeof f.line != 'number') return true;
+    const hasCol = typeof f.col == 'number';
+    const e = m.sm.findEntry(f.line - 1, hasCol ? (f.col as number) - 1 : 0) as Partial<SourceMapping>;
+    const src = e.originalSource && typeof e.originalLine == 'number' ? sourcePath(e.originalSource, m.file) : undefined;
+    if (src) {
+      f.file = src;
+      f.line = e.originalLine! + 1;
+      if (hasCol) f.col = e.originalColumn! + 1;
+    }
+    return true;
+  };
+  return async (body) => {
+    try {
+      const b = JSON.parse(body) as { entries?: WireEntry[] };
+      const locs: Loc[] = [];
+      for (const e of b.entries ?? []) {
+        if (e.origin) locs.push(e.origin, ...(e.origin.frames ?? []));
+        if (e.kind == 'exception' || e.kind == 'trace')
+          for (let x = e.body, d = 0; x && d < 8; x = x.previous as typeof x, d++) if (Array.isArray(x.frames)) locs.push(...x.frames);
+      }
+      return (await Promise.all(locs.map(at))).includes(true) ? JSON.stringify(b) : body;
+    } catch {
+      return body;
+    }
+  };
+}
+
 const norm = (p: string): string => {
   const s = p.replace(/\\/g, '/').replace(/[?#].*$/, '');
   return process.platform == 'win32' ? s.toLowerCase() : s;
@@ -311,8 +416,13 @@ export function gaze(options: GazeViteOptions = {}): Plugin[] {
         devServer = server.resolvedUrls?.local[0]?.replace(/\/$/, '') ?? '';
       });
       void handshake(c).then((msg) => log.info(`  gaze: ${msg}`, { timestamp: true }));
+      const toSource = sourceMapper(server);
+      let last: Promise<unknown> = Promise.resolve();
       server.ws.on('gaze:batch', (data: { p?: string; b?: string }) => {
-        if (typeof data?.b == 'string') data.p == '/' ? forwarder!.push('/', data.b) : forwarder!.batch(data.b);
+        const b = data?.b;
+        if (typeof b != 'string') return;
+        // In arrival order. Native batches are mapped before Ray mode re-encodes them; Ray envelopes are not.
+        last = last.then(() => (data.p == '/' ? forwarder!.push('/', b) : toSource(b).then((m) => forwarder!.batch(m)))).catch(() => {});
       });
       server.ws.on('gaze:lock', (data: { id?: string }, ws) => {
         if (typeof data?.id != 'string') return;
@@ -378,7 +488,7 @@ export function gaze(options: GazeViteOptions = {}): Plugin[] {
       apply: o.apply ?? 'serve',
       enforce: 'pre',
       async transform(code, id) {
-        if (!code.includes(PKG)) return;
+        if (!code.includes(PKG) || !target().cfg.enabled) return;
         parse ??= ((await import('vite')) as unknown as { parseAst: ParseFn }).parseAst;
         return transformCallSites(code, id, parse);
       },

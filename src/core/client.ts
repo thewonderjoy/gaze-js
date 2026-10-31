@@ -6,7 +6,7 @@
 import { uuid7 } from './ids.js';
 import type { RayMeta, rayEnvelope } from './ray-wire.js';
 import { LIMITS, redactor } from './serialize.js';
-import type { Bridge, Client as ClientJson, Limits, LockState, Mods, Options, WireEntry, Wire } from './types.js';
+import type { Bridge, Client as ClientJson, Frame, Limits, LockState, Mods, Options, WireEntry, Wire } from './types.js';
 import { VERSION } from '../version.js';
 
 export const NAME = '@thewonderjoy/gaze-js';
@@ -37,6 +37,23 @@ export interface Platform {
   exit?: (code: number) => void;
   /** Ray-compat origin hostname. */
   rayHost?: string;
+  /** Async context for the active trace (Node, Bun, Deno: AsyncLocalStorage). */
+  ctx?: Ctx;
+  /** Map a frame in generated code (a bundler's chunk) to its source through the file's source map. */
+  mapFrame?: <F extends Frame>(f: F) => F;
+}
+
+/** What one async context carries: its trace, plus state that capture modules keep per trace. */
+export interface Scope {
+  trace?: WireEntry['trace'];
+  [k: string]: unknown;
+}
+
+export interface Ctx {
+  get(): Scope | undefined;
+  run<T>(s: Scope, fn: () => T): T;
+  /** Make `s` current for the rest of this synchronous run and what it schedules. */
+  enter(s: Scope): void;
 }
 
 export type Encoder = typeof rayEnvelope;
@@ -49,6 +66,18 @@ export const hint = (msg: string): void => {
   if (!warned.has(msg)) {
     warned.add(msg);
     warn(`[gaze] ${msg}`);
+  }
+};
+
+/**
+ * A production build: `process.env.NODE_ENV` as a bundler bakes it in (Vite, webpack, Next.js, and
+ * esbuild when minifying, replace the expression). False where nothing defines it, e.g. without a bundler.
+ */
+export const productionBuild = (): boolean => {
+  try {
+    return process.env.NODE_ENV === 'production';
+  } catch {
+    return false;
   }
 };
 
@@ -78,8 +107,9 @@ export class Client {
   hello?: Record<string, any>;
   /** Wire mode in effect (auto resolves through hello). */
   wire: Wire = 'native';
-  /** Trace (group) applied to new entries. */
-  trace?: WireEntry['trace'];
+  #trace?: WireEntry['trace'];
+  /** Run on a trace's scope just before its summary row (capture modules flush per-trace state). */
+  closers: ((s: Scope) => void)[] = [];
   /** Ray-compat encoder, loaded on first use (keeps it out of the core bundle). */
   enc?: Encoder;
   #load?: () => Promise<Encoder>;
@@ -108,6 +138,15 @@ export class Client {
     p.onExit?.(() => {
       if (this.#q.length || (this.#items.length && !this.#retry && !this.#busy)) void this.flush();
     });
+  }
+
+  /** Trace (group) applied to new entries: per async context where the platform has one. */
+  get trace(): WireEntry['trace'] {
+    return this.p.ctx ? this.p.ctx.get()?.trace : this.#trace;
+  }
+
+  set trace(t: WireEntry['trace']) {
+    this.#trace = t;
   }
 
   configure(o: Options): void {

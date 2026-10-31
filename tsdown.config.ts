@@ -6,6 +6,8 @@
 //   dist/gaze.global.js  IIFE (minified), sets globalThis.ray only if undefined
 // Declarations come from `tsc -p tsconfig.build.json` (dist/types). auto.js and the adapters import
 // "@thewonderjoy/gaze-js" itself, so they share the instance the export conditions pick.
+// `process.env.NODE_ENV` stays as written: the app's bundler fills it in (a production build gets the
+// no-op), so the browser builds must not bake in rolldown's "development".
 import { defineConfig, type UserConfig } from 'tsdown';
 
 const self = ['@thewonderjoy/gaze-js', 'vue', 'react', 'svelte', 'vite'];
@@ -21,10 +23,11 @@ const base: UserConfig = {
   deps: { neverBundle: self },
   // The bundler must not follow tsconfig `paths` (they point the self-import at src/ for type checks).
   tsconfig: 'tsconfig.bundle.json',
+  define: { 'process.env.NODE_ENV': 'process.env.NODE_ENV' },
 };
 
 export default defineConfig([
-  { ...base, entry: { node: 'src/node.ts' }, platform: 'node', target: 'node20', outputOptions: { chunkFileNames: 'node-[name]-[hash].js' } },
+  { ...base, entry: { node: 'src/node.ts', 'auto-node': 'src/auto-node.ts', bin: 'src/bin.ts' }, platform: 'node', target: 'node20', outputOptions: { chunkFileNames: 'node-[name]-[hash].js' } },
   { ...base, entry: { browser: 'src/browser.ts' }, platform: 'browser', target: 'es2022', outputOptions: { chunkFileNames: 'browser-[name]-[hash].js' } },
   { ...base, entry: { edge: 'src/edge.ts' }, platform: 'neutral', target: 'es2022', outputOptions: { chunkFileNames: 'edge-[name]-[hash].js' } },
   {

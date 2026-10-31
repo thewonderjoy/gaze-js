@@ -18,6 +18,7 @@ export const RayPlugin = {
   install(app: App, o: RayPluginOptions = {}): void {
     app.config.globalProperties.$ray = ray;
     app.provide('ray', ray);
+    if (ray.disabled()) return; // off (a production build): Vue's handlers stay as they are
     if (o.errors !== false) {
       const prev = app.config.errorHandler;
       app.config.errorHandler = (err, inst, info) => {

@@ -47,6 +47,18 @@ describe('noop', () => {
     expect(noop.gaze).toBe(noop.ray);
     expect(noop.dump).toBe(noop.ray);
     expect(noop.ray.at$('f', 1, 1)('x').red()).toBe(noop.ray);
+    await expect(noop.ray().die()).resolves.toBeUndefined();
+  });
+
+  it("still runs the app's own code: group() returns its result, measure(fn) calls fn", async () => {
+    expect(noop.ray.group('g', () => 42)).toBe(42);
+    let ran = 0;
+    expect(noop.ray().measure(() => ran++)).toBe(noop.ray);
+    noop.ray().measure(async () => {
+      ran++;
+      throw new Error('settled, as when timed');
+    });
+    expect(ran).toBe(2);
   });
 });
 
@@ -56,9 +68,12 @@ describe('package', () => {
     expect(VERSION).toBe(pkg.version);
     expect(pkg.name).toBe('@thewonderjoy/gaze-js');
     expect(pkg.dependencies ?? {}).toEqual({}); // zero runtime dependencies
-    expect(pkg.sideEffects).toEqual(['./dist/auto.js']);
+    expect(pkg.sideEffects).toEqual(['./dist/auto.js', './dist/auto-node.js']);
     const dot = pkg.exports['.'];
-    expect(Object.keys(dot)).toEqual(['types', 'workerd', 'edge-light', 'browser', 'deno', 'bun', 'node', 'default']);
+    expect(Object.keys(dot)).toEqual(['types', 'production', 'workerd', 'edge-light', 'browser', 'deno', 'bun', 'node', 'default']);
+    // A production build (a bundler resolving the `production` condition) gets the no-op only.
+    expect(dot.production).toBe('./dist/noop.js');
+    expect(pkg.exports['./auto'].production).toBe('./dist/noop.js');
   });
 
   it('src/generated/batch.ts is an exact copy of protocol/generated/batch.d.ts', () => {

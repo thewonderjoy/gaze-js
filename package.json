@@ -28,16 +28,21 @@
     "node": ">=20.19"
   },
   "sideEffects": [
-    "./dist/auto.js"
+    "./dist/auto.js",
+    "./dist/auto-node.js"
   ],
   "main": "./dist/node.js",
   "module": "./dist/browser.js",
   "types": "./dist/types/node.d.ts",
+  "bin": {
+    "gaze-js": "./dist/bin.js"
+  },
   "unpkg": "./dist/gaze.global.js",
   "jsdelivr": "./dist/gaze.global.js",
   "exports": {
     ".": {
       "types": "./dist/types/node.d.ts",
+      "production": "./dist/noop.js",
       "workerd": "./dist/edge.js",
       "edge-light": "./dist/edge.js",
       "browser": "./dist/browser.js",
@@ -48,6 +53,10 @@
     },
     "./auto": {
       "types": "./dist/types/auto.d.ts",
+      "production": "./dist/noop.js",
+      "node": "./dist/auto-node.js",
+      "bun": "./dist/auto-node.js",
+      "deno": "./dist/auto-node.js",
       "default": "./dist/auto.js"
     },
     "./vite": {

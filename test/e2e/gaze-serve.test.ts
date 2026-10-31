@@ -4,7 +4,7 @@
 // modifiers and origins. The server is stopped with "q" on stdin (killed as a fallback).
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createRay, type RayFn } from '../../src/core/ray.js';
@@ -115,11 +115,11 @@ const fresh = (project: string, wire: 'native' | 'ray'): RayFn => {
 };
 
 /** Run a fixture with `node` and wait for it to exit by itself. */
-function runNode(file: string, env: Record<string, string>): Promise<{ code: number | null; ms: number; out: string }> {
+function runNode(file: string, env: Record<string, string>, args: string[] = []): Promise<{ code: number | null; ms: number; out: string }> {
   const t0 = Date.now();
   const clean = { ...process.env };
   for (const k of ['GAZE_HOST', 'GAZE_PORT', 'RAY_HOST', 'RAY_PORT', 'GAZE_ENABLED', 'NODE_ENV', 'GAZE_WIRE']) delete clean[k];
-  const p = spawn(process.execPath, [file], { cwd: pkg, env: { ...clean, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(process.execPath, [...args, file], { cwd: pkg, env: { ...clean, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   p.stdout!.on('data', (d) => (out += d));
   p.stderr!.on('data', (d) => (out += d));
@@ -171,7 +171,11 @@ describe('e2e: native protocol (POST /v1/batch)', () => {
     ray.at('e2e-fixed-id').append('v3');
     await ray.flush();
 
-    await server.until(() => !!server.find((e) => e.title == 'updated') && !server.find((e) => e.title == 'to remove'));
+    // Wait for the flush's last op too (the append makes the title 'v2 v3'). Ops apply in order, so the
+    // hide() before it is in by then. Waiting only for 'updated' read the fixed entry too early on slow CI.
+    await server.until(
+      () => !!server.find((e) => e.title == 'updated') && !server.find((e) => e.title == 'to remove') && server.byKey('e2e-fixed-id')?.title == 'v2 v3',
+    );
     // 22 entries: 'to update' became 'updated', 'to remove' is gone, the fixed id is one entry.
     await server.until(() => server.all('e2e-native').length >= 22).catch((e) => {
       throw new Error(`${e.message}\n${server.all('e2e-native').map((x) => `${x.kind} ${x.title}`).join('\n')}`);
@@ -319,11 +323,54 @@ describe('e2e: the built package in child processes', () => {
     expect(e.origin!.line).toBe(lineOf(fixture, '@require-cjs'));
   });
 
-  it('NODE_ENV=production sends nothing', async () => {
-    const r = await runNode(pkg + 'test/e2e/fixtures/production.mjs', { GAZE_HOST: '127.0.0.1', GAZE_PORT: String(PORT), NODE_ENV: 'production' });
+  it('--import auto-node: a trace per request, each console line once, at the app line', async () => {
+    const fixture = pkg + 'test/e2e/fixtures/auto-server.mjs';
+    const r = await runNode(fixture, { GAZE_HOST: '127.0.0.1', GAZE_PORT: String(PORT) }, ['--import', pathToFileURL(pkg + 'dist/auto-node.js').href]);
     expect(r.code).toBe(0);
+    await server.until(() => !!server.find((e) => e.kind == 'request' && e.title.includes('/orders/7')));
+    const sum = server.find((e) => e.kind == 'request' && e.title.includes('/orders/7'))!;
+    const all = [...server.entries.values()];
+    const inReq = all.filter((e) => e.title.includes('auto: in request'));
+    expect(inReq).toHaveLength(1);
+    expect(inReq[0]!.traceId).toBe(sum.traceId);
+    expect(inReq[0]!.origin!.line).toBe(lineOf(fixture, '@auto-console'));
+    expect(all.find((e) => e.title.includes('auto: ray in request'))!.traceId).toBe(sum.traceId);
+    const outside = all.filter((e) => e.title.includes('auto: before any request'));
+    expect(outside).toHaveLength(1);
+    expect(outside[0]!.traceId).toBeFalsy();
+  });
+
+  it('NODE_ENV=production (or GAZE_ENABLED=false): the no-op, nothing patched, sent or exited; --conditions=production loads only noop.js', async () => {
+    const env = { GAZE_HOST: '127.0.0.1', GAZE_PORT: String(PORT) };
+    const quiet = { enabled: false, group: 42, console: true, channels: [], store: false, exitHooks: 0 };
+    const fixture = pkg + 'test/e2e/fixtures/production.mjs';
+    for (const [extra, args, resolved] of [
+      [{ NODE_ENV: 'production' }, [], 'node.js'],
+      [{ GAZE_ENABLED: 'false' }, [], 'node.js'],
+      [{ NODE_ENV: 'production' }, ['--conditions=production'], 'noop.js'],
+    ] as const) {
+      const r = await runNode(fixture, { ...env, ...extra }, [...args]);
+      expect(r.code, r.out).toBe(0); // die() did not exit
+      expect(JSON.parse(r.out)).toEqual({ resolved, ...quiet });
+    }
     await new Promise((r) => setTimeout(r, 300));
     expect(server.find((e) => e.title.startsWith('must not arrive'))).toBeUndefined();
+  });
+
+  it('gaze-js run adds the --import only while Gaze is on', async () => {
+    const run = (extra: Record<string, string>) =>
+      new Promise<string>((resolve) => {
+        const env: Record<string, string | undefined> = { ...process.env, GAZE_PORT: '1', ...extra };
+        for (const k of ['GAZE_ENABLED', 'NODE_ENV', 'NODE_OPTIONS']) if (!(k in extra)) delete env[k];
+        const p = spawn(process.execPath, [pkg + 'dist/bin.js', 'run', '--', 'node', pkg + 'test/e2e/fixtures/node-options.cjs'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '';
+        p.stdout!.on('data', (d) => (out += d));
+        p.stderr!.on('data', (d) => (out += d));
+        p.on('exit', () => resolve(out.trim()));
+      });
+    expect(await run({})).toMatch(/^--import=file:.*auto-node\.js$/);
+    expect(await run({ NODE_ENV: 'production' })).toBe('none');
+    expect(await run({ GAZE_ENABLED: 'false' })).toBe('none');
   });
 
   it('IIFE (dist/gaze.global.js): sets globalThis.ray only if undefined, and sends from the browser build', async () => {

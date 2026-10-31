@@ -1,17 +1,45 @@
 import { createServer as createHttp, type IncomingMessage, type Server } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseAst, createServer, type ViteDevServer } from 'vite';
+import { parseAst, createServer, type InlineConfig, type Plugin, type ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { applyEdits, gaze, transformCallSites } from '../src/vite.js';
+import { applyEdits, gaze, transformCallSites, type GazeViteOptions } from '../src/vite.js';
 
 const SRC = fileURLToPath(new URL('../src/browser.ts', import.meta.url));
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+const vlq = (n: number): string => {
+  let v = n < 0 ? (-n << 1) | 1 : n << 1;
+  let s = '';
+  do {
+    let d = v & 31;
+    v >>>= 5;
+    if (v) d |= 32;
+    s += B64[d];
+  } while (v);
+  return s;
+};
+
+// v3 map of `n` prepended lines: every column of `code` maps to itself, n lines further down.
+function shiftMap(code: string, n: number, source: string) {
+  let pl = 0;
+  let pc = 0;
+  const lines = code.split('\n').map((text, l) => {
+    const segs: string[] = [];
+    for (let c = 0; c <= text.length; c++) {
+      segs.push(vlq(c ? 1 : 0) + 'A' + vlq(l - pl) + vlq(c - pc));
+      pl = l;
+      pc = c;
+    }
+    return segs.join(',');
+  });
+  return { version: 3, sources: [source], names: [], mappings: ';'.repeat(n) + lines.join(';') };
+}
 
 // Minimal source-map decoder: [genLine, genCol] -> [srcLine, srcCol] (0-based).
 function decode(mappings: string): Map<string, [number, number]> {
-  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const out = new Map<string, [number, number]>();
   let sl = 0;
   let sc = 0;
@@ -140,26 +168,16 @@ describe('dev server: injection, HMR bridge, lock relay, handshake', () => {
   let server: ViteDevServer;
   let root: string;
   const logs: string[] = [];
-
-  beforeAll(async () => {
-    app = createHttp((req: IncomingMessage, res) => {
-      let body = '';
-      req.on('data', (c) => (body += c));
-      req.on('end', () => {
-        appRequests.push({ method: req.method!, url: req.url!, body, ua: req.headers['user-agent'] });
-        if (req.url == '/v1/hello') return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ v: 1, server: { name: 'mock', version: '9' } }));
-        if (req.url?.startsWith('/v1/locks/')) return res.writeHead(200).end('{"state":"released"}');
-        res.writeHead(202).end('{"accepted":1}');
-      });
-    });
-    await new Promise<void>((r) => app.listen(0, '127.0.0.1', r));
-    appPort = (app.address() as { port: number }).port;
-
-    root = mkdtempSync(join(tmpdir(), 'gaze-vite-'));
-    mkdirSync(join(root, 'src'));
-    writeFileSync(join(root, 'src', 'main.ts'), "console.log('app');\n");
-    writeFileSync(join(root, 'index.html'), '<!doctype html><html><head></head><body></body></html>');
-    server = await createServer({
+  // Test-only transform that pushes src/shift.js down by `shift` lines, with a proper source map.
+  let shift = 3;
+  const shifter: Plugin = {
+    name: 'test:shift',
+    transform(code, id) {
+      if (id.endsWith('/src/shift.js')) return { code: '// shifted\n'.repeat(shift) + code, map: shiftMap(code, shift, 'shift.js') };
+    },
+  };
+  const start = async (options: GazeViteOptions): Promise<ViteDevServer> => {
+    const s = await createServer({
       root,
       configFile: false,
       logLevel: 'info',
@@ -175,9 +193,50 @@ describe('dev server: injection, HMR bridge, lock relay, handshake', () => {
       resolve: { alias: [{ find: /^@thewonderjoy\/gaze-js$/, replacement: SRC }] },
       server: { port: 0, host: '127.0.0.1', strictPort: false },
       build: { rollupOptions: { input: 'src/main.ts' } },
-      plugins: [gaze({ host: '127.0.0.1', port: appPort, project: 'demo', capture: { errors: true } })],
+      plugins: [shifter, gaze({ host: '127.0.0.1', port: appPort, project: 'demo', ...options })],
+    } satisfies InlineConfig);
+    return s.listen();
+  };
+  const base = (s: ViteDevServer) => `http://127.0.0.1:${(s.httpServer!.address() as { port: number }).port}`;
+  // Served (transformed) 1-based line and column of `marker`.
+  const servedAt = async (s: ViteDevServer, url: string, marker: string) => {
+    const lines = (await (await fetch(base(s) + url)).text()).split('\n');
+    const i = lines.findIndex((l) => l.includes(marker));
+    return { line: i + 1, col: lines[i]!.indexOf(marker) + 1 };
+  };
+  // Sends gaze:batch over the HMR socket and waits for the request the app gets for it.
+  const viaHmr = async (s: ViteDevServer, data: { p: string; b: string }, match: (r: (typeof appRequests)[number]) => boolean) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${(s.httpServer!.address() as { port: number }).port}/?token=${(s.config as any).webSocketToken}`, 'vite-hmr');
+    await new Promise((r, j) => ((ws.onopen = r), (ws.onerror = j)));
+    ws.send(JSON.stringify({ type: 'custom', event: 'gaze:batch', data }));
+    for (let i = 0; i < 150 && !appRequests.some(match); i++) await new Promise((r) => setTimeout(r, 20));
+    ws.close();
+    return appRequests.find(match);
+  };
+  const native = (session: string, entries: unknown[]) =>
+    JSON.stringify({ v: 1, client: { name: 'x', version: '1', runtime: 'browser' }, session, entries });
+
+  beforeAll(async () => {
+    app = createHttp((req: IncomingMessage, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        appRequests.push({ method: req.method!, url: req.url!, body, ua: req.headers['user-agent'] });
+        if (req.url == '/v1/hello') return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ v: 1, server: { name: 'mock', version: '9' } }));
+        if (req.url?.startsWith('/v1/locks/')) return res.writeHead(200).end('{"state":"released"}');
+        res.writeHead(202).end('{"accepted":1}');
+      });
     });
-    await server.listen();
+    await new Promise<void>((r) => app.listen(0, '127.0.0.1', r));
+    appPort = (app.address() as { port: number }).port;
+
+    // Real path, so it matches the module graph's files (macOS /var -> /private/var).
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'gaze-vite-')));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'src', 'main.ts'), "console.log('app');\n");
+    writeFileSync(join(root, 'src', 'shift.js'), "export function boom() {\n  throw new Error('boom');\n}\n");
+    writeFileSync(join(root, 'index.html'), '<!doctype html><html><head></head><body></body></html>');
+    server = await start({ capture: { errors: true } });
   }, 60_000);
 
   afterAll(async () => {
@@ -221,5 +280,77 @@ describe('dev server: injection, HMR bridge, lock relay, handshake', () => {
     expect(appRequests.find((r) => r.url == '/v1/batch')).toMatchObject({ method: 'POST', body: batch, ua: 'gaze-js/0.1.0' });
     expect(appRequests.find((r) => r.url?.startsWith('/v1/locks/'))!.url).toBe('/v1/locks/lock-0001?wait=25');
     expect(inbox.find((m) => m.event == 'gaze:lock')).toMatchObject({ type: 'custom', data: { id: 'lock-0001', state: 'released' } });
+  });
+
+  describe('maps served URLs to source files and lines', () => {
+    const file = () => root.replace(/\\/g, '/') + '/src/shift.js';
+    const bySession = (id: string) => (r: (typeof appRequests)[number]) => r.url == '/v1/batch' && r.body.includes(`"session":"${id}"`);
+
+    it('origins and exception frames (with previous), in every URL form; foreign URLs untouched', async () => {
+      const { line, col } = await servedAt(server, '/src/shift.js', 'throw');
+      expect(line).toBe(2 + shift);
+      const port = new URL(base(server)).port;
+      const at = (f: string) => ({ file: f, line, col });
+      const foreign = [
+        { file: base(server) + '/node_modules/.vite/deps/vue.js?v=abc', line: 9, col: 9 },
+        at('https://cdn.example.com/src/shift.js'),
+        at('http://127.0.0.1:1/src/shift.js'),
+        { file: '/src/missing.js', line: 4, col: 1 },
+      ];
+      const entries = [
+        { op: 'add', id: 'a', seq: 1, kind: 'log', body: { values: [] }, origin: at(base(server) + '/src/shift.js') },
+        { op: 'add', id: 'b', seq: 2, kind: 'log', body: { values: [] }, origin: at('/src/shift.js?t=171#x') },
+        {
+          op: 'add',
+          id: 'c',
+          seq: 3,
+          kind: 'exception',
+          body: {
+            class: 'Error',
+            message: 'boom',
+            frames: [{ ...at(`http://localhost:${port}/src/shift.js`), function: 'boom' }, ...foreign, { file: base(server) + '/src/main.ts', line: 1, col: 1 }],
+            previous: { class: 'Error', message: 'cause', frames: [at('/src/shift.js')] },
+          },
+        },
+      ];
+      const sent = await viaHmr(server, { p: '/v1/batch', b: native('map-1', entries) }, bySession('map-1'));
+      const got = JSON.parse(sent!.body).entries;
+      const src = { file: file(), line: 2, col: 3 };
+      expect(got[0].origin).toEqual(src);
+      expect(got[1].origin).toEqual(src);
+      expect(got[2].body.frames[0]).toEqual({ ...src, function: 'boom' });
+      expect(got[2].body.frames.slice(1, 5)).toEqual(foreign);
+      expect(got[2].body.frames[5]).toEqual({ file: root.replace(/\\/g, '/') + '/src/main.ts', line: 1, col: 1 });
+      expect(got[2].body.previous.frames[0]).toEqual(src);
+    });
+
+    it('drops a cached map when the module is transformed again (HMR)', async () => {
+      shift = 5;
+      const graph = server.environments.client.moduleGraph;
+      graph.invalidateModule((await graph.getModuleByUrl('/src/shift.js'))!);
+      const { line, col } = await servedAt(server, '/src/shift.js', 'throw');
+      expect(line).toBe(7);
+      const sent = await viaHmr(server, { p: '/v1/batch', b: native('map-2', [{ op: 'add', id: 'd', seq: 1, kind: 'log', body: { values: [] }, origin: { file: '/src/shift.js', line, col } }]) }, bySession('map-2'));
+      expect(JSON.parse(sent!.body).entries[0].origin).toEqual({ file: file(), line: 2, col: 3 });
+    });
+
+    it('forwards a body it cannot read, and Ray envelopes from the browser, unchanged', async () => {
+      const junk = '{"session":"map-3",';
+      expect((await viaHmr(server, { p: '/v1/batch', b: junk }, (r) => r.body == junk))!.url).toBe('/v1/batch');
+      const env = JSON.stringify({ uuid: 'u', payloads: [{ type: 'log', content: { values: [1] }, origin: { file: '/src/shift.js', line_number: 7 } }], meta: {} });
+      expect((await viaHmr(server, { p: '/', b: env }, (r) => r.body == env))!.url).toBe('/');
+    });
+
+    it('maps before Ray mode re-encodes the batch', async () => {
+      const ray = await start({ wire: 'ray' });
+      try {
+        const { line, col } = await servedAt(ray, '/src/shift.js', 'throw');
+        const entry = { op: 'add', id: 'ray-map-1', seq: 1, kind: 'text', body: { text: 'x' }, origin: { file: base(ray) + '/src/shift.js', line, col } };
+        const sent = await viaHmr(ray, { p: '/v1/batch', b: native('map-4', [entry]) }, (r) => r.url == '/' && r.body.includes('ray-map-1'));
+        expect(JSON.parse(sent!.body).payloads[0].origin).toMatchObject({ file: file(), line_number: 2 });
+      } finally {
+        await ray.close();
+      }
+    });
   });
 });
