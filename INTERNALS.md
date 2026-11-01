@@ -141,7 +141,7 @@ Each adapter calls the previous handler, or the framework's default reporting, a
 
 **Origins in Node.** Console and network entries take the first frame outside `node_modules` and this package, so a framework's console wrapper (Next.js has two) is not reported as the origin. With no such frame they get no origin inside a trace, and outside one they are skipped: start-up banners and a dev server's own update check. Frames in generated code (Turbopack chunks, tsc or esbuild output) are mapped through the file's `sourceMappingURL` with Node's built-in `module.SourceMap`. Each file is read once, files under `node_modules` are never read, and Deno is skipped so no permission prompt appears. Exception frames outside `node_modules` are mapped the same way. When this package is bundled into one file with the app (own folder unknown), the frame after a `captureStackTrace` boundary is taken as the caller, without skipping by file. Query origins stop at thenables (Drizzle, Prisma) and pool callbacks, because V8's `at async` frames do not continue through them, so those queries often have no origin.
 
-For `/auto`, pick modules with `globalThis.GAZE_CAPTURE = { console: false }`, or in Node with `GAZE_CAPTURE=errors,network,requests,queries`.
+For `/auto`, pick modules with `globalThis.GAZE_CAPTURE = { console: false }`, or in Node with `GAZE_CAPTURE=errors,network,requests,queries`. The two work the other way round: the object turns off the keys set to `false` (a missing key is on), while the env list turns on only what it names. `capture(options)` works like the env list: a missing key is off, so `capture({ console: false })` installs nothing.
 
 ## Size
 

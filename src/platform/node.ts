@@ -40,6 +40,12 @@ export function envDefaults(): Options {
   return o;
 }
 
+/** GAZE_SLOW_QUERY_MS (as in gaze-laravel): captured queries at least this slow get the `slow` flag. */
+export function slowQueryMs(): number | undefined {
+  const ms = Number(env('GAZE_SLOW_QUERY_MS') ?? NaN);
+  return ms >= 0 ? ms : undefined;
+}
+
 /** Gaze is off for this process: the entries export the no-op and /auto installs nothing. */
 export const off = (): boolean => envDefaults().enabled === false;
 

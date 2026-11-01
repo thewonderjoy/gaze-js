@@ -1,6 +1,6 @@
 {
   "name": "@thewonderjoy/gaze-js",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Gaze JavaScript client: ray()-style debugging for Node, Bun, Deno, browsers and edge runtimes, with a Vite plugin and Vue/React/Svelte adapters. Speaks the Gaze native protocol and the Spatie Ray wire format.",
   "license": "MIT",
   "author": "thewonderjoy",

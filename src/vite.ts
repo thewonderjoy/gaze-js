@@ -7,7 +7,7 @@ import { SourceMap, type SourceMapPayload, type SourceMapping } from 'node:modul
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HtmlTagDescriptor, Plugin, ResolvedConfig, ViteDevServer } from 'vite';
-import { Client } from './core/client.js';
+import { Client, isLoopback } from './core/client.js';
 import { rayEnvelope } from './core/ray-wire.js';
 import type { CaptureOptions } from './core/ray.js';
 import type { Options, Wire, WireEntry } from './core/types.js';
@@ -227,8 +227,9 @@ export class Forwarder {
     const ray = path == '/';
     try {
       const h: Record<string, string> = { 'Content-Type': 'application/json', ...node.headers!(ray) };
-      const t = this.c.cfg.token;
-      if (t) h.Authorization = `Bearer ${t}`;
+      // As the client does it: the token only goes to an app beyond loopback.
+      const { token, url, host } = this.c.cfg;
+      if (token && !isLoopback(url ? new URL(url).hostname : host)) h.Authorization = `Bearer ${token}`;
       const st = await node.post(this.c.base() + path, body, h, false);
       if (st == 429 || st >= 500) throw st;
       this.q.shift();

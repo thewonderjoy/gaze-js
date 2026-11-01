@@ -6,7 +6,7 @@ import { hex, rand, traceId, uuid7 } from '../src/core/ids.js';
 import type { WireEntry } from '../src/core/types.js';
 import * as noop from '../src/noop.js';
 import { VERSION } from '../src/version.js';
-import { envDefaults } from '../src/platform/node.js';
+import { envDefaults, slowQueryMs } from '../src/platform/node.js';
 
 describe('ids', () => {
   it('uuid7: version 7, variant 10, time-ordered, unique', () => {
@@ -103,6 +103,22 @@ describe('Node env defaults', () => {
       expect(envDefaults()).toEqual({ host: 'gaze-host', port: 2345, enabled: true, wire: 'ray' });
       env.GAZE_ENABLED = '0';
       expect(envDefaults().enabled).toBe(false);
+    } finally {
+      for (const k of Object.keys(env)) if (!(k in keep)) delete env[k];
+      Object.assign(env, keep);
+    }
+  });
+
+  it('GAZE_SLOW_QUERY_MS sets the slow query threshold; unset or invalid leaves the default', () => {
+    const env = process.env;
+    const keep = { ...env };
+    try {
+      delete env.GAZE_SLOW_QUERY_MS;
+      expect(slowQueryMs()).toBeUndefined();
+      for (const [v, ms] of [['500', 500], ['0', 0], ['abc', undefined], ['-5', undefined]] as const) {
+        env.GAZE_SLOW_QUERY_MS = v;
+        expect(slowQueryMs()).toBe(ms);
+      }
     } finally {
       for (const k of Object.keys(env)) if (!(k in keep)) delete env[k];
       Object.assign(env, keep);

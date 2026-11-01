@@ -241,6 +241,21 @@ describe('SQL', () => {
     expect(qs[2]!.body).toMatchObject({ error: 'no table', flags: ['failed'] });
   });
 
+  it('flags a query that takes slowMs or longer as slow', async () => {
+    const { ray, entries } = makeRay({ ctx });
+    undo.push(captureQueries(ray, ctx, { slowMs: 50 }).undo);
+    const dc = await import('node:diagnostics_channel');
+    const pgjs = dc.tracingChannel('postgres:query');
+    await pgjs.tracePromise(async () => sleep(0), { query: 'select 1', parameters: [] });
+    await pgjs.tracePromise(async () => sleep(70), { query: 'select 2', parameters: [] });
+    await ray.flush();
+    const qs = entries().filter((e) => e.kind == 'query');
+    expect(qs.map((e) => [e.body!.sql, e.body!.flags, e.color ?? null])).toEqual([
+      ['select 1', [], null],
+      ['select 2', ['slow'], 'red'],
+    ]);
+  });
+
   it('runs a busy pool callback in the context of the request that asked', async () => {
     const { ray, entries } = makeRay({ ctx });
     const q = captureQueries(ray, ctx);

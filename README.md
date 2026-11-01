@@ -70,12 +70,12 @@ node --import @thewonderjoy/gaze-js/auto server.js
 What you get:
 
 - **Requests.** One group per incoming HTTP request in Express, Fastify, Hono, NestJS, Next.js or plain `node:http`. Your `gaze()` calls, console output, outgoing `fetch` calls, errors and queries go into it, and a summary row with the status and duration closes it.
-- **SQL.** Queries from `pg`, `mysql2`, `postgres` and `better-sqlite3`. Prisma 7, Drizzle, Kysely and Knex use these drivers, so their queries show up too. When the same query runs more than three times in one request, the runs fold into one N+1 row that lists each of them.
+- **SQL.** Queries from `pg`, `mysql2`, `postgres` and `better-sqlite3`. Prisma 7, Drizzle, Kysely and Knex use these drivers, so their queries show up too. When the same query runs more than three times in one request, the runs fold into one N+1 row that lists each of them. Queries that take 100 ms or longer are marked slow; set `GAZE_SLOW_QUERY_MS` to change that.
 - **Less noise.** Console lines and network calls that your dependencies make outside a request, such as start-up banners and update checks, are left out.
 
 In Next.js, route handlers, Server Components and the server render of Client Components each land in their request, and entries point at your own files.
 
-To choose what gets captured, list the parts you want: `GAZE_CAPTURE=console,errors,network,requests,queries`.
+Without `GAZE_CAPTURE` all five parts are on. To capture only some, list them: `GAZE_CAPTURE=errors,requests,queries`. Parts you leave out are off. The full list is `console,errors,network,requests,queries`.
 
 Not covered: `node:http2` servers, `Bun.serve` and `Deno.serve`. Finding database drivers that another package brings along, as Prisma's adapters do, needs Node 22.15+. Queries made through an ORM often have no file and line.
 
@@ -102,7 +102,7 @@ In `vite build` it swaps the client for the no-op build, so production bundles s
 | Option | Default | |
 |---|---|---|
 | `project` | the Vite root folder's name | The project name shown in the app. |
-| `capture` | `false` | `true` forwards console output, errors and network calls from the browser. `{ network: true }` picks parts. Network capture is what [links browser calls to server requests](#link-browser-calls-to-server-requests). |
+| `capture` | `false` | `true` forwards console output, errors and network calls from the browser. `{ network: true }` forwards only network calls: parts you leave out are off. Network capture is what [links browser calls to server requests](#link-browser-calls-to-server-requests). |
 | `inject` | `true` | Adds the client to your pages and entry modules. |
 | `entries` | | More entry modules to add the client to, relative to the Vite root. |
 | `bridge` | `true` | Sends browser entries through Vite's connection. `false` makes the browser post to the app directly. |
@@ -285,7 +285,7 @@ Each method returns the same object, so calls chain: `gaze(x).red().label('x')`.
 
 | Method | What it does |
 |---|---|
-| `await gaze.capture({ console, errors, network })` | Forwards console output, errors and `fetch` calls. In Node also `requests` and `queries` (see [Node servers](#node-servers)). Resolves to an uninstall function. |
+| `await gaze.capture({ console, errors, network })` | Forwards console output, errors and `fetch` calls. In Node also `requests` and `queries` (see [Node servers](#node-servers)). With no options it installs every part; with options, only the ones set to `true`. Resolves to an uninstall function. |
 | `await gaze.flush()` | Sends everything queued. |
 | `gaze.configure(options)` | Changes settings (below). |
 | `gaze.macro(name, fn)` | Adds your own method: `gaze.macro('double', function (n) { return this.send(n * 2) })`. |

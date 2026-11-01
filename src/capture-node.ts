@@ -4,6 +4,7 @@ import { install as base } from './capture.js';
 import type { CaptureOptions, RayFn } from './core/ray.js';
 import { captureRequests } from './node/requests.js';
 import { captureQueries } from './node/sql.js';
+import { slowQueryMs } from './platform/node.js';
 
 /** Install the selected capture modules (all of them when `options` is omitted). */
 export function install(ray: RayFn, o?: CaptureOptions): () => void {
@@ -14,7 +15,7 @@ export function install(ray: RayFn, o?: CaptureOptions): () => void {
   G[K] = true;
   const undo: (() => void)[] = [base(ray, o)];
   const ctx = ray.$client.p.ctx;
-  if (!o || o.queries) undo.push(captureQueries(ray, ctx).undo);
+  if (!o || o.queries) undo.push(captureQueries(ray, ctx, { slowMs: slowQueryMs() }).undo);
   if (!o || o.requests) undo.push(captureRequests(ray, ctx));
   return () => {
     undo.forEach((f) => f());

@@ -24,7 +24,7 @@ const G = globalThis as Record<string, any>;
 export interface QueryOptions {
   /** Runs of one SQL shape per trace before they fold into one N+1 entry (default 3). */
   threshold?: number;
-  /** Queries at least this slow get the `slow` flag (default 100 ms). */
+  /** Queries at least this slow get the `slow` flag (default 100 ms; /auto passes GAZE_SLOW_QUERY_MS). */
   slowMs?: number;
   /** Where drivers are resolved from (default process.cwd()). */
   root?: string;
