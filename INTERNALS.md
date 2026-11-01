@@ -92,6 +92,8 @@ In `vite dev` the plugin:
 - sends `project.root` and the dev server URL with every batch (the app does not use them yet),
 - forwards Vite compile errors (`vite:error`).
 
+The app trusts what the dev server forwards like any local process, so the bridge takes batches from whoever can open the HMR socket: this machine, plus the LAN when the server runs with `--host` (phones, Sail/Docker), which can already read the source from that server. Other websites cannot: Vite 6.0.9 and later (the peer range) require the socket token that only pages from the dev server get. A lock id must be one path segment (`[\w.:-]{8,64}`, URL-encoded) before the dev server polls it.
+
 In `vite build` it aliases the package and `/auto` to `/noop` (about 400 bytes gzipped), which the `production` export condition does anyway.
 
 | Option | Default | |

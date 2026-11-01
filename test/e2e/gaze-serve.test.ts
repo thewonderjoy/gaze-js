@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createRay, type RayFn } from '../../src/core/ray.js';
 import { node } from '../../src/platform/node.js';
+import { VERSION } from '../../src/version.js';
 import { lineOf } from '../helpers.js';
 import { pkg, repo } from './setup.js';
 
@@ -221,7 +222,7 @@ describe('e2e: native protocol (POST /v1/batch)', () => {
     expect(fixed).toMatchObject({ hidden: true });
     expect(fixed.title).toBe('v2 v3'); // update replaced v1; the append added v3 as an iteration
     const src = server.sources.get(log.sourceId);
-    expect(src).toMatchObject({ project: 'e2e-native', runtime: 'node', client: '@thewonderjoy/gaze-js 0.1.0', via: 'native' });
+    expect(src).toMatchObject({ project: 'e2e-native', runtime: 'node', client: `@thewonderjoy/gaze-js ${VERSION}`, via: 'native' });
   });
 
   it('pause() waits for Continue / Stop in the app (GET /v1/locks/{id}?wait=25)', async () => {

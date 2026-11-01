@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parseAst, createServer, type InlineConfig, type Plugin, type ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyEdits, gaze, transformCallSites, type GazeViteOptions } from '../src/vite.js';
+import { VERSION } from '../src/version.js';
 
 const SRC = fileURLToPath(new URL('../src/browser.ts', import.meta.url));
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -277,9 +278,24 @@ describe('dev server: injection, HMR bridge, lock relay, handshake', () => {
     ws.send(JSON.stringify({ type: 'custom', event: 'gaze:lock', data: { id: 'lock-0001' } }));
     for (let i = 0; i < 100 && !inbox.some((m) => m.event == 'gaze:lock'); i++) await new Promise((r) => setTimeout(r, 20));
     ws.close();
-    expect(appRequests.find((r) => r.url == '/v1/batch')).toMatchObject({ method: 'POST', body: batch, ua: 'gaze-js/0.1.0' });
+    expect(appRequests.find((r) => r.url == '/v1/batch')).toMatchObject({ method: 'POST', body: batch, ua: `gaze-js/${VERSION}` });
     expect(appRequests.find((r) => r.url?.startsWith('/v1/locks/'))!.url).toBe('/v1/locks/lock-0001?wait=25');
     expect(inbox.find((m) => m.event == 'gaze:lock')).toMatchObject({ type: 'custom', data: { id: 'lock-0001', state: 'released' } });
+  });
+
+  it('a lock id from the socket stays one path segment', async () => {
+    const port = (server.httpServer!.address() as { port: number }).port;
+    const token = (server.config as any).webSocketToken;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${token}`, 'vite-hmr');
+    const inbox: any[] = [];
+    ws.onmessage = (e) => inbox.push(JSON.parse(String(e.data)));
+    await new Promise((r, j) => ((ws.onopen = r), (ws.onerror = j)));
+    const before = appRequests.length;
+    for (const id of ['../../theme#', '..', 'a/b/c/d/e/f']) ws.send(JSON.stringify({ type: 'custom', event: 'gaze:lock', data: { id } }));
+    for (let i = 0; i < 100 && inbox.filter((m) => m.event == 'gaze:lock').length < 3; i++) await new Promise((r) => setTimeout(r, 20));
+    ws.close();
+    expect(inbox.filter((m) => m.event == 'gaze:lock').map((m) => m.data.state)).toEqual(['released', 'released', 'released']);
+    expect(appRequests.slice(before).filter((r) => r.method == 'GET' && !r.url?.startsWith('/v1/hello'))).toEqual([]);
   });
 
   describe('maps served URLs to source files and lines', () => {

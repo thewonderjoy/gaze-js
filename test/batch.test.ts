@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { expectValidBatch, makeRay, settle } from './helpers.js';
+import { VERSION } from '../src/version.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -47,7 +48,7 @@ describe('batching', () => {
     await t.ray.flush();
     expect(t.batches()[0].client).toEqual({
       name: '@thewonderjoy/gaze-js',
-      version: '0.1.0',
+      version: VERSION,
       runtime: 'node',
       runtime_version: '24.0.0',
       framework: 'vue',
@@ -154,18 +155,19 @@ describe('batching', () => {
     expect(t.posts).toHaveLength(1);
   });
 
-  it('rate limiter sends one notice, then drops until clear()', async () => {
+  it('rate limiter sends one notice, then drops until clear(), which lifts the limits', async () => {
     const t = makeRay();
-    t.ray.rateLimiter().max(2);
+    t.ray.rateLimiter().max(2).perSecond(100);
     for (let i = 0; i < 5; i++) t.ray(i);
     await t.ray.flush();
     const es = t.entries();
     expect(es.map((e) => e.kind)).toEqual(['log', 'log', 'text']);
     expect(es[2]).toMatchObject({ label: 'Rate limit', body: { text: 'Rate limit has been reached...' } });
-    t.ray.rateLimiter().clear().max(0);
-    t.ray('again');
+    // As in gaze-php and spatie/ray: clear() removes max and perSecond, not only the count.
+    t.ray.rateLimiter().clear();
+    for (let i = 0; i < 4; i++) t.ray('again', i);
     await t.ray.flush();
-    expect(t.entries()).toHaveLength(4);
+    expect(t.entries().slice(3).map((e) => e.kind)).toEqual(['log', 'log', 'log', 'log']);
   });
 
   it('macro adds chainable methods', async () => {

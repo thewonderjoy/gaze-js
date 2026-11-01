@@ -1,17 +1,16 @@
 {
   "name": "@thewonderjoy/gaze-js",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "description": "Gaze JavaScript client: ray()-style debugging for Node, Bun, Deno, browsers and edge runtimes, with a Vite plugin and Vue/React/Svelte adapters. Speaks the Gaze native protocol and the Spatie Ray wire format.",
   "license": "MIT",
   "author": "thewonderjoy",
-  "homepage": "https://github.com/thewonderjoy/gaze/tree/main/packages/js#readme",
+  "homepage": "https://thewonderjoy.com/products/gaze",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thewonderjoy/gaze.git",
-    "directory": "packages/js"
+    "url": "git+https://github.com/thewonderjoy/gaze-js.git"
   },
   "bugs": {
-    "url": "https://github.com/thewonderjoy/gaze/issues"
+    "url": "https://github.com/thewonderjoy/gaze-js/issues"
   },
   "keywords": [
     "debug",
@@ -99,7 +98,7 @@
   "peerDependencies": {
     "react": ">=18",
     "svelte": ">=5",
-    "vite": ">=6",
+    "vite": ">=6.0.9",
     "vue": ">=3.3"
   },
   "peerDependenciesMeta": {

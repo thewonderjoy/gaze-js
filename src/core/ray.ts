@@ -55,7 +55,9 @@ export class RateLimiter {
     this.#per = n;
     return this;
   }
+  /** Removes both limits and resets the counts, as in gaze-php and spatie/ray. */
   clear(): this {
+    this.#max = this.#per = 0;
     this.#n = this.#inSec = 0;
     this.#hit = false;
     return this;

@@ -370,14 +370,19 @@ export class Client {
     }
   }
 
-  /** Native: `GET /v1/locks/{id}?wait=25` until released; Ray: poll `GET /locks/{name}` every second. */
+  /**
+   * Native: `GET /v1/locks/{id}?wait=25` until released; Ray: poll `GET /locks/{name}` every second.
+   * The id is an entry id, but over the Vite bridge any page sends it, so it must stay one path segment.
+   */
   async lock(id: string): Promise<LockState> {
     const ray = this.wire == 'ray';
     const b = this.cfg.bridge;
     if (b) return b.lock ? b.lock(id, ray) : 'released';
+    if (!/^[\w.:-]{8,64}$/.test(id)) return 'released';
+    const seg = encodeURIComponent(id);
     for (;;) {
       try {
-        const r = await this.p.get(this.base() + (ray ? `/locks/${id}` : `/v1/locks/${id}?wait=25`), this.headers(ray), 30000);
+        const r = await this.p.get(this.base() + (ray ? `/locks/${seg}` : `/v1/locks/${seg}?wait=25`), this.headers(ray), 30000);
         const j = r.json;
         if (r.status != 200 || !j) return 'released';
         if (!ray) {
