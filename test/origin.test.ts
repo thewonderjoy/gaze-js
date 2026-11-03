@@ -82,6 +82,7 @@ describe('parseStack', () => {
       '    at new Widget (C:\\work\\app\\widget.js:7:11)',
       '    at Object.<anonymous> (/srv/app/index.js:1:1)',
       '    at file:///srv/app/top.mjs:2:3',
+      '    at async file:///srv/app/dist/route.js:8:13',
       '    at Promise.all (index 0)',
       '    at node:internal/process/task_queues:105:5',
       '    at run (/srv/app/node_modules/lib/index.js:4:4)',
@@ -92,6 +93,7 @@ describe('parseStack', () => {
       { file: 'C:\\work\\app\\widget.js', line: 7, col: 11, function: 'Widget' },
       { file: '/srv/app/index.js', line: 1, col: 1 },
       { file: 'file:///srv/app/top.mjs', line: 2, col: 3 },
+      { file: 'file:///srv/app/dist/route.js', line: 8, col: 13 },
       { file: 'node:internal/process/task_queues', line: 105, col: 5, vendor: true },
       { file: '/srv/app/node_modules/lib/index.js', line: 4, col: 4, function: 'run', vendor: true },
     ]);

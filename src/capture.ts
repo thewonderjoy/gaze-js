@@ -53,7 +53,7 @@ function appRay(ray: RayFn, boundary?: Function): Ray | null {
   return c.trace ? ray.$at() : null;
 }
 /** A Ray at an error's own first frame outside dependencies (source-mapped in Node). */
-function errRay(ray: RayFn, err: unknown): Ray {
+export function errRay(ray: RayFn, err: unknown): Ray {
   const map = ray.$client.p.mapFrame;
   for (const f of parseStack((err as Error | undefined)?.stack)) {
     if (f.vendor || isOwn(f.file)) continue;

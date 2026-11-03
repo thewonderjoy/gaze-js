@@ -1,5 +1,6 @@
 // While Gaze is off nothing of the client runs: no exit, no capture, no request, no trace. The entries
 // export the no-op when the environment (or a production build) says off.
+import dc from 'node:diagnostics_channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { makeRay, settle } from './helpers.js';
 
@@ -54,9 +55,11 @@ describe('the entries', () => {
     off.ray.enable();
     off.ray.configure({ enabled: true });
     expect(off.ray.enabled()).toBe(false);
-    const log = console.log;
+    const [log, write] = [console.log, process.stderr.write];
     await import('../src/auto-node.js');
     expect(console.log, '/auto installs nothing').toBe(log);
+    expect(process.stderr.write, '/auto installs nothing').toBe(write);
+    expect(dc.hasSubscribers('tracing:fastify.request.handler:error'), '/auto installs nothing').toBe(false);
 
     vi.resetModules();
     vi.stubEnv('GAZE_ENABLED', 'true');

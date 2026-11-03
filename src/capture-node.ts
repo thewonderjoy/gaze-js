@@ -1,9 +1,12 @@
-// Capture modules for Node, Bun and Deno: the browser-safe ones plus request traces and SQL, kept in
-// their own chunk so the browser bundle does not grow.
+// Capture modules for Node, Bun and Deno: the browser-safe ones plus request traces, SQL and errors a
+// framework handles itself (printed to stderr, or published by Fastify), kept in their own chunk so the
+// browser bundle does not grow.
 import { install as base } from './capture.js';
 import type { CaptureOptions, RayFn } from './core/ray.js';
+import { captureFastify } from './node/fastify.js';
 import { captureRequests } from './node/requests.js';
 import { captureQueries } from './node/sql.js';
+import { captureStderr } from './node/stderr.js';
 import { slowQueryMs } from './platform/node.js';
 
 /** Install the selected capture modules (all of them when `options` is omitted). */
@@ -15,6 +18,7 @@ export function install(ray: RayFn, o?: CaptureOptions): () => void {
   G[K] = true;
   const undo: (() => void)[] = [base(ray, o)];
   const ctx = ray.$client.p.ctx;
+  if (!o || o.errors) undo.push(captureStderr(ray), captureFastify(ray));
   if (!o || o.queries) undo.push(captureQueries(ray, ctx, { slowMs: slowQueryMs() }).undo);
   if (!o || o.requests) undo.push(captureRequests(ray, ctx));
   return () => {

@@ -5,7 +5,7 @@
 // counts as ours. No substring matching on names like `-ray` (node-ray defect 03 §2.7 #9).
 import type { Frame } from './types.js';
 
-const V8 = /^\s*at (?:(.+?) \()?(.+?):(\d+):(\d+)\)?$/;
+const V8 = /^\s*at (?:(.+?) \()?(?:async )?(.+?):(\d+):(\d+)\)?$/;
 const GECKO = /^\s*(.*?)@(.+?):(\d+):(\d+)$/;
 const E = Error as ErrorConstructor & {
   stackTraceLimit?: number;
