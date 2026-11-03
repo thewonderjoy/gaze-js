@@ -1,14 +1,16 @@
 // SQL from Node database drivers, folded per trace like gaze-laravel's QueryWatcher. mysql2 (3.20+) and
-// postgres.js (4+) publish TracingChannels; pg and better-sqlite3 do not, so their prototypes are patched:
-// every copy the app resolves, through a module.registerHooks resolve hook (Node 22.15+ / 23.5+; Prisma's
-// driver adapters bring their own nested copies), else the copy the project resolves from its working
-// directory. ORMs on top (Prisma 7 driver adapters, Drizzle, Kysely, Knex) are covered through the driver.
+// postgres.js (4+) publish TracingChannels; pg, better-sqlite3 and mariadb do not, so their prototypes are
+// patched: every copy the app resolves, through a module.registerHooks resolve hook (Node 22.15+ / 23.5+;
+// Prisma's driver adapters bring their own nested copies), else the copy the project resolves from its
+// working directory. ORMs on top (Prisma 7 driver adapters, Drizzle, Kysely, Knex) are covered through the
+// driver.
 //
 // Body (kind query) matches gaze-laravel: sql (values filled in, for display), template, bindings, driver,
 // time_ms, fingerprint, flags.
 // Inside a trace, the same SQL shape running more than `threshold` times folds into its first entry
 // (op update with executions[]) and the separate rows already sent are removed; later runs update it at
 // powers of two and once more when the trace closes. Outside any trace every query is its own row.
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -215,36 +217,52 @@ export function captureQueries(ray: RayFn, ctx: Ctx | undefined, o: QueryOptions
     undo.push(() => tc.unsubscribe(h));
   }
 
-  const PATCH: Record<string, (m: any, rec: Rec) => (() => void) | undefined> = { pg: patchPg, 'better-sqlite3': patchSqlite };
+  const PATCH: Record<string, (m: any, rec: Rec) => (() => void) | undefined> = { pg: patchPg, 'better-sqlite3': patchSqlite, mariadb: patchMariadb };
   const patch = (id: string, m: any) => {
     const u = PATCH[id]!(m?.default ?? m, rec);
     if (u) undo.push(u);
   };
+  // What a patch gets: the module, or mariadb's two promise classes, which it does not export.
+  const load = (id: string, file: string) => {
+    const req = createRequire(file);
+    if (id != 'mariadb') return req(file);
+    const lib = join(file, file.endsWith('.cjs') ? '../../lib' : '../lib');
+    return { ConnectionPromise: req(join(lib, 'connection-promise.js')), PoolPromise: req(join(lib, 'pool-promise.js')) };
+  };
   // Every copy the app resolves, from anywhere (Prisma's adapters bring their own nested drivers):
   // the resolve hook loads and patches the copy before the importer gets it. Node 22.15+ / 23.5+.
   const mod = G.process?.getBuiltinModule?.('node:module');
+  let hooked = false;
   if (mod?.registerHooks) {
     let off = false;
-    const h = mod.registerHooks({
-      resolve(spec: string, context: unknown, next: (s: string, c: unknown) => { url: string }) {
-        const r = next(spec, context);
-        if (!off && PATCH[spec] && r.url.startsWith('file:'))
+    try {
+      const h = mod.registerHooks({
+        resolve(spec: string, context: unknown, next: (s: string, c: unknown) => { url: string; format?: string }) {
+          let r = next(spec, context);
+          if (off || !PATCH[spec] || !r.url.startsWith('file:')) return r;
+          // mariadb's CommonJS build is one bundle with its classes inside. require() gets the ES build
+          // instead: the same exports, with each class in a file of its own.
+          const esm = spec == 'mariadb' && r.url.endsWith('/dist/promise.cjs') && new URL('../promise.js', r.url);
+          if (esm && existsSync(esm)) r = { ...r, url: esm.href, format: 'module' };
           try {
-            patch(spec, createRequire(r.url)(fileURLToPath(r.url)));
+            patch(spec, load(spec, fileURLToPath(r.url)));
           } catch {}
-        return r;
-      },
-    });
-    undo.push(() => ((off = true), h.deregister?.()));
+          return r;
+        },
+      });
+      undo.push(() => ((off = true), h.deregister?.()));
+      hooked = true;
+    } catch {} // Jest throws: the hook would reach Node's loader, not the one its tests run in.
   }
   // Copies the app loaded before capture was installed (e.g. `ray.capture()` after `import pg`), and
-  // without the hook (older Node, Bun) the project's own copy, loaded now.
+  // without the hook (older Node, Bun, Jest) the project's own copy, loaded now. mariadb's classes are
+  // always loaded: an ES module leaves no require.cache entry to look for.
   try {
     const req = createRequire(join(o.root ?? G.process.cwd(), 'noop.js'));
     for (const id in PATCH)
       try {
         const path = req.resolve(id);
-        const m = req.cache[path]?.exports ?? (mod?.registerHooks ? undefined : req(path));
+        const m = id == 'mariadb' ? load(id, path) : (req.cache[path]?.exports ?? (hooked ? undefined : req(path)));
         if (m) patch(id, m);
       } catch {}
   } catch {}
@@ -340,4 +358,35 @@ export function patchSqlite(D: any, rec: Rec): (() => void) | undefined {
     P.exec = exec;
     if (SP) Object.assign(SP, orig);
   };
+}
+
+/**
+ * mariadb 3: `query` and `execute` of the promise API's connections and pools (Prisma's MySQL adapter
+ * uses both). A pool runs them on its base connection, not through these, so nothing is recorded twice.
+ * Not covered: `batch()`, `prepare()`, `queryStream()` and the callback API.
+ */
+export function patchMariadb(m: { ConnectionPromise?: any; PoolPromise?: any }, rec: Rec): (() => void) | undefined {
+  const saved: [any, string, Function][] = [];
+  for (const C of [m?.ConnectionPromise, m?.PoolPromise]) {
+    const P = (C?.default ?? C)?.prototype;
+    for (const name of ['query', 'execute']) {
+      const f = P?.[name];
+      if (typeof f != 'function' || f.$gaze) continue;
+      saved.push([P, name, f]);
+      P[name] = Object.assign(
+        function (this: unknown, sql: any, values?: unknown) {
+          const done = rec('mariadb', typeof sql == 'string' ? sql : sql?.sql, values ?? sql?.values);
+          const r = f.apply(this, arguments);
+          if (r && typeof r.then == 'function')
+            r.then(
+              () => done(),
+              (e: unknown) => done(e),
+            );
+          return r;
+        },
+        { $gaze: true },
+      );
+    }
+  }
+  if (saved.length) return () => saved.forEach(([P, name, f]) => (P[name] = f));
 }

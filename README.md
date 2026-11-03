@@ -43,6 +43,8 @@ await gaze().pause(); // waits until you press Continue in the app
 
 `require('@thewonderjoy/gaze-js')` works too.
 
+Jest needs no config. It loads a CommonJS copy of the package, so a test that runs your code sends its `gaze()` calls to the app. `@thewonderjoy/gaze-js/auto` installs nothing in test files.
+
 `gaze()` copies the value when you call it, so changing the object afterwards doesn't change what you logged. If the app is closed, entries wait in a small queue and go out when it opens. Gaze never throws into your code.
 
 Short scripts need nothing extra, because pending sends finish before Node exits. If you call `process.exit()`, call `await gaze.flush()` first. In edge handlers, use `ctx.waitUntil(gaze.flush())`.
@@ -70,14 +72,14 @@ node --import @thewonderjoy/gaze-js/auto server.js
 What you get:
 
 - **Requests.** One group per incoming HTTP request in Express, Fastify, Hono, NestJS, Next.js or plain `node:http`. Your `gaze()` calls, console output, outgoing `fetch` calls, errors and queries go into it, and a summary row with the status and duration closes it.
-- **SQL.** Queries from `pg`, `mysql2`, `postgres` and `better-sqlite3`. Prisma 7, Drizzle, Kysely and Knex use these drivers, so their queries show up too. When the same query runs more than three times in one request, the runs fold into one N+1 row that lists each of them. Queries that take 100 ms or longer are marked slow; set `GAZE_SLOW_QUERY_MS` to change that.
+- **SQL.** Queries from `pg`, `mysql2`, `mariadb`, `postgres` and `better-sqlite3`. Prisma 7, Drizzle, Kysely and Knex use these drivers, so their queries show up too. For Prisma that covers its Postgres, MySQL/MariaDB and SQLite adapters. When the same query runs more than three times in one request, the runs fold into one N+1 row that lists each of them. Queries that take 100 ms or longer are marked slow; set `GAZE_SLOW_QUERY_MS` to change that.
 - **Less noise.** Console lines and network calls that your dependencies make outside a request, such as start-up banners and update checks, are left out.
 
 In Next.js, route handlers, Server Components and the server render of Client Components each land in their request, and entries point at your own files.
 
 Without `GAZE_CAPTURE` all five parts are on. To capture only some, list them: `GAZE_CAPTURE=errors,requests,queries`. Parts you leave out are off. The full list is `console,errors,network,requests,queries`.
 
-Not covered: `node:http2` servers, `Bun.serve` and `Deno.serve`. Finding database drivers that another package brings along, as Prisma's adapters do, needs Node 22.15+. Queries made through an ORM often have no file and line.
+Not covered: `node:http2` servers, `Bun.serve` and `Deno.serve`. Finding database drivers that another package brings along, as Prisma's adapters do, needs Node 22.15+, and so does `mariadb` in a CommonJS app. Queries made through an ORM often have no file and line.
 
 ## Browser apps
 
@@ -258,7 +260,7 @@ Each method returns the same object, so calls chain: `gaze(x).red().label('x')`.
 
 | Method | What it does |
 |---|---|
-| `await pause()` | Waits until you press Continue in the app. Resolves at once if the app is closed. |
+| `await pause()` | Waits until you press Continue in the app. Stop throws a `StopExecutionRequested` error, as in gaze-php. Express 5 and NestJS answer that request with a 500 and keep running. Express 4 and plain `node:http` don't catch errors from async handlers, so there the process exits. Resolves at once if the app is closed. |
 | `measure(name = 'default')` | A stopwatch. The first call starts it, later calls show the total and lap time. |
 | `measure(fn)` | Times a function, sync or async. |
 | `stopTime(name?)` | Forgets one stopwatch, or all of them. |

@@ -81,3 +81,34 @@ describe('the entries', () => {
     expect((await import('../src/browser.js')).ray.enabled()).toBe(true);
   });
 });
+
+describe('/auto in a Jest test file', () => {
+  it('installs nothing (Jest marks each test file global), while ray() stays on', async () => {
+    const G = globalThis as Record<symbol, unknown>;
+    const jest = Symbol.for('jest-native-promise');
+    const dc = await import('node:diagnostics_channel');
+    const requests = dc.channel('http.server.request.start');
+    const log = console.log;
+    vi.stubEnv('GAZE_ENABLED', 'true');
+    G[jest] = Promise;
+    const undo: (() => void)[] = [];
+    try {
+      undo.push((await import('../src/auto-node.js')).uninstall, (await import('../src/auto.js')).uninstall);
+      expect(console.log).toBe(log);
+      expect(requests.hasSubscribers).toBe(false);
+      expect((await import('../src/node.js')).ray.enabled()).toBe(true);
+    } finally {
+      undo.forEach((f) => f());
+      delete G[jest];
+    }
+
+    // Outside a Jest test file the same import installs capture.
+    vi.resetModules();
+    const { uninstall } = await import('../src/auto-node.js');
+    expect(console.log).not.toBe(log);
+    expect(requests.hasSubscribers).toBe(true);
+    uninstall();
+    expect(console.log).toBe(log);
+    expect(requests.hasSubscribers).toBe(false);
+  });
+});

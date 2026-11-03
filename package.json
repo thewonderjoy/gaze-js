@@ -1,6 +1,6 @@
 {
   "name": "@thewonderjoy/gaze-js",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Gaze JavaScript client: ray()-style debugging for Node, Bun, Deno, browsers and edge runtimes, with a Vite plugin and Vue/React/Svelte adapters. Speaks the Gaze native protocol and the Spatie Ray wire format.",
   "license": "MIT",
   "author": "thewonderjoy",
@@ -28,7 +28,9 @@
   },
   "sideEffects": [
     "./dist/auto.js",
-    "./dist/auto-node.js"
+    "./dist/auto-node.js",
+    "./dist/cjs/auto.cjs",
+    "./dist/cjs/auto-node.cjs"
   ],
   "main": "./dist/node.js",
   "module": "./dist/browser.js",
@@ -44,19 +46,35 @@
       "production": "./dist/noop.js",
       "workerd": "./dist/edge.js",
       "edge-light": "./dist/edge.js",
-      "browser": "./dist/browser.js",
+      "browser": {
+        "module-sync": "./dist/browser.js",
+        "require": "./dist/cjs/browser.cjs",
+        "default": "./dist/browser.js"
+      },
       "deno": "./dist/node.js",
       "bun": "./dist/node.js",
-      "node": "./dist/node.js",
+      "node": {
+        "module-sync": "./dist/node.js",
+        "require": "./dist/cjs/node.cjs",
+        "default": "./dist/node.js"
+      },
       "default": "./dist/browser.js"
     },
     "./auto": {
       "types": "./dist/types/auto.d.ts",
       "production": "./dist/noop.js",
-      "node": "./dist/auto-node.js",
+      "node": {
+        "module-sync": "./dist/auto-node.js",
+        "require": "./dist/cjs/auto-node.cjs",
+        "default": "./dist/auto-node.js"
+      },
       "bun": "./dist/auto-node.js",
       "deno": "./dist/auto-node.js",
-      "default": "./dist/auto.js"
+      "default": {
+        "module-sync": "./dist/auto.js",
+        "require": "./dist/cjs/auto.cjs",
+        "default": "./dist/auto.js"
+      }
     },
     "./vite": {
       "types": "./dist/types/vite.d.ts",
@@ -64,19 +82,35 @@
     },
     "./noop": {
       "types": "./dist/types/noop.d.ts",
-      "default": "./dist/noop.js"
+      "default": {
+        "module-sync": "./dist/noop.js",
+        "require": "./dist/cjs/noop.cjs",
+        "default": "./dist/noop.js"
+      }
     },
     "./vue": {
       "types": "./dist/types/adapters/vue.d.ts",
-      "default": "./dist/adapters/vue.js"
+      "default": {
+        "module-sync": "./dist/adapters/vue.js",
+        "require": "./dist/cjs/adapters/vue.cjs",
+        "default": "./dist/adapters/vue.js"
+      }
     },
     "./react": {
       "types": "./dist/types/adapters/react.d.ts",
-      "default": "./dist/adapters/react.js"
+      "default": {
+        "module-sync": "./dist/adapters/react.js",
+        "require": "./dist/cjs/adapters/react.cjs",
+        "default": "./dist/adapters/react.js"
+      }
     },
     "./svelte": {
       "types": "./dist/types/adapters/svelte.d.ts",
-      "default": "./dist/adapters/svelte.js"
+      "default": {
+        "module-sync": "./dist/adapters/svelte.js",
+        "require": "./dist/cjs/adapters/svelte.cjs",
+        "default": "./dist/adapters/svelte.js"
+      }
     },
     "./global": "./dist/gaze.global.js",
     "./package.json": "./package.json"

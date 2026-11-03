@@ -241,6 +241,49 @@ describe('SQL', () => {
     expect(qs[2]!.body).toMatchObject({ error: 'no table', flags: ['failed'] });
   });
 
+  it('patches mariadb, whose CommonJS build require() swaps for its ES build', async () => {
+    // Like mariadb 3.5: each promise class in a file of its own, exported only through functions, and a
+    // CommonJS build that is one bundle with copies of them inside (never patched).
+    const dir = mkdtempSync(join(tmpdir(), 'gaze-mariadb-'));
+    const pkg = join(dir, 'node_modules', 'mariadb');
+    mkdirSync(join(pkg, 'lib'), { recursive: true });
+    mkdirSync(join(pkg, 'dist'));
+    const exports = { '.': { import: './promise.js', require: './dist/promise.cjs' } };
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'mariadb', type: 'module', exports }));
+    const run = `(sql) => new Promise((r, j) => setImmediate(() => (String(sql.sql ?? sql).includes('nope') ? j(new Error('no table')) : r([]))))`;
+    writeFileSync(join(pkg, 'lib', 'connection-promise.js'), `const run = ${run};\nexport default class ConnectionPromise { query(sql) { return run(sql); } execute(sql) { return run(sql); } }\n`);
+    writeFileSync(
+      join(pkg, 'lib', 'pool-promise.js'),
+      `import C from './connection-promise.js';\nconst run = ${run};\nexport default class PoolPromise { query(sql) { return run(sql); } execute(sql) { return run(sql); } async getConnection() { return new C(); } }\n`,
+    );
+    writeFileSync(join(pkg, 'promise.js'), `import P from './lib/pool-promise.js';\nexport const createPool = () => new P();\n`);
+    writeFileSync(join(pkg, 'dist', 'promise.cjs'), `exports.createPool = () => ({ query: async () => [] });\n`);
+
+    const { ray, entries } = makeRay({ ctx });
+    undo.push(captureQueries(ray, ctx, { root: dir }).undo);
+    const { createRequire } = await import('node:module');
+    const esm = await import(pathToFileURL(join(pkg, 'promise.js')).href);
+    // Through the resolve hook (Node 22.15+), the way a CommonJS app or Prisma's CommonJS adapter loads it.
+    const cjs = createRequire(join(dir, 'app.cjs'))('mariadb');
+    await ray.group('db', async () => {
+      const pool = esm.createPool();
+      await pool.query('select * from t where id = ?', [7]);
+      const c = await pool.getConnection();
+      await c.execute({ sql: 'select * from u where id = ?' }, [8]);
+      await c.query('select * from nope').catch(() => {});
+      await cjs.createPool().query('select ?', 9);
+    });
+    await ray.flush();
+    const qs = entries().filter((e) => e.kind == 'query');
+    expect(qs.map((e) => [e.body!.driver, e.body!.sql, e.trace?.name])).toEqual([
+      ['mariadb', 'select * from t where id = 7', 'db'],
+      ['mariadb', 'select * from u where id = 8', 'db'],
+      ['mariadb', 'select * from nope', 'db'],
+      ['mariadb', 'select 9', 'db'],
+    ]);
+    expect(qs[2]!.body).toMatchObject({ error: 'no table', flags: ['failed'] });
+  });
+
   it('flags a query that takes slowMs or longer as slow', async () => {
     const { ray, entries } = makeRay({ ctx });
     undo.push(captureQueries(ray, ctx, { slowMs: 50 }).undo);

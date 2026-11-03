@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { expectValidBatch, makeRay, settle } from './helpers.js';
+import { StopExecutionRequested } from '../src/core/ray.js';
 import { VERSION } from '../src/version.js';
 
 afterEach(() => {
@@ -313,19 +314,26 @@ describe('kinds', () => {
     expect(es[0]).toMatchObject({ label: 'v' });
   });
 
-  it('pause() flushes, long-polls the lock and resolves its state; never hangs when down', async () => {
+  it('pause() flushes, long-polls the lock, resolves on Continue and throws on Stop; never hangs when down', async () => {
     let polls = 0;
+    let end = 'released';
     const t = makeRay({
       get: async (url) => {
         if (url.endsWith('/v1/hello')) return { status: 200, json: { v: 1 } };
         polls++;
         expect(url).toMatch(/\/v1\/locks\/[0-9a-f-]{36}\?wait=25$/);
-        return { status: 200, json: { state: polls < 2 ? 'active' : 'stopped' } };
+        return { status: 200, json: { state: polls % 2 ? 'active' : end } };
       },
     });
-    await expect(t.ray().pause()).resolves.toBe('stopped');
+    await expect(t.ray().pause()).resolves.toBe('released');
     expect(t.entries()[0]).toMatchObject({ kind: 'lock' });
     expect(polls).toBe(2);
+    end = 'stopped';
+    const stop = await t.ray().pause().catch((e: unknown) => e);
+    expect(stop).toBeInstanceOf(StopExecutionRequested);
+    expect(stop).toBeInstanceOf(Error);
+    expect(stop).toMatchObject({ name: 'StopExecutionRequested' });
+    expect(polls).toBe(4);
     const down = makeRay({
       get: async () => {
         throw new TypeError('fetch failed');

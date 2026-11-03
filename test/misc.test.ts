@@ -60,6 +60,20 @@ describe('noop', () => {
     });
     expect(ran).toBe(2);
   });
+
+  it('exports every value the real entry does, so imports keep resolving in production', async () => {
+    const real = await import('../src/node.js');
+    expect(Object.keys(real).filter((k) => !(k in noop))).toEqual([]);
+    expect(new noop.StopExecutionRequested()).toBeInstanceOf(Error);
+  });
+});
+
+describe('StopExecutionRequested', () => {
+  it("has gaze-php's message", async () => {
+    const { StopExecutionRequested } = await import('../src/core/ray.js');
+    const php = readFileSync(repo + 'packages/php/src/Exceptions/StopExecutionRequested.php', 'utf8');
+    expect(php).toContain(`'${new StopExecutionRequested().message}'`);
+  });
 });
 
 describe('package', () => {
@@ -68,12 +82,29 @@ describe('package', () => {
     expect(VERSION).toBe(pkg.version);
     expect(pkg.name).toBe('@thewonderjoy/gaze-js');
     expect(pkg.dependencies ?? {}).toEqual({}); // zero runtime dependencies
-    expect(pkg.sideEffects).toEqual(['./dist/auto.js', './dist/auto-node.js']);
+    expect(pkg.sideEffects).toEqual(['./dist/auto.js', './dist/auto-node.js', './dist/cjs/auto.cjs', './dist/cjs/auto-node.cjs']);
     const dot = pkg.exports['.'];
     expect(Object.keys(dot)).toEqual(['types', 'production', 'workerd', 'edge-light', 'browser', 'deno', 'bun', 'node', 'default']);
     // A production build (a bundler resolving the `production` condition) gets the no-op only.
     expect(dot.production).toBe('./dist/noop.js');
     expect(pkg.exports['./auto'].production).toBe('./dist/noop.js');
+  });
+
+  it('CommonJS copies only for loaders without require(esm): `module-sync` comes first', () => {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const dual: Record<string, unknown> = {};
+    const walk = (o: Record<string, any>, at: string): void => {
+      for (const [k, v] of Object.entries(o))
+        if (k == 'require') dual[at] = o;
+        else if (v && typeof v == 'object') walk(v, at ? `${at} ${k}` : k);
+    };
+    walk(pkg.exports, '');
+    for (const [at, o] of Object.entries(dual) as [string, Record<string, string>][]) {
+      expect(Object.keys(o), at).toEqual(['module-sync', 'require', 'default']);
+      expect(o['default'], at).toBe(o['module-sync']);
+      expect(o['require'], at).toBe(o['default']!.replace('./dist/', './dist/cjs/').replace(/\.js$/, '.cjs'));
+    }
+    expect(Object.keys(dual)).toEqual(['. browser', '. node', './auto node', './auto default', './noop default', './vue default', './react default', './svelte default']);
   });
 
   it('src/generated/batch.ts is an exact copy of protocol/generated/batch.d.ts', () => {

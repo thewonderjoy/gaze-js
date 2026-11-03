@@ -3,7 +3,7 @@
 // the function and every chained Ray, so bundles carry a few hundred bytes and no transport,
 // serializer or capture code. Calls that wrap the app's own code still run it: group() returns its
 // result, measure(fn) calls fn, pass() returns its value.
-import type { RateLimiter as RL, Ray as R, RayFn } from './core/ray.js';
+import type { RateLimiter as RL, Ray as R, RayFn, StopExecutionRequested as SER } from './core/ray.js';
 
 const ASYNC = new Set(['flush', 'pause', 'die', 'capture']);
 const n: any = new Proxy(function () {}, {
@@ -40,6 +40,9 @@ export const Ray = class {} as unknown as typeof R;
 export type Ray = R;
 export const RateLimiter = class {} as unknown as typeof RL;
 export type RateLimiter = RL;
+/** Never thrown here: pause() resolves 'released'. */
+export const StopExecutionRequested = class extends Error {} as unknown as typeof SER;
+export type StopExecutionRequested = SER;
 /** Stand-in for "@thewonderjoy/gaze-js/auto". */
 export const uninstall = (): void => {};
 export type { CaptureOptions, Color, LockState, Options, Origin, RayFn, Size, Value, WatchOptions } from './core/ray.js';

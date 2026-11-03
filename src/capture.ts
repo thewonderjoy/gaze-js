@@ -26,6 +26,14 @@ export function autoOptions(): CaptureOptions | undefined {
   return Object.fromEntries(MODULES.map((k) => [k, on.includes(k)]));
 }
 
+/**
+ * Code running in a Jest test file. Jest defines this symbol on each test file's global, never on the
+ * process's own, so `gaze-js run -- jest` still captures in Jest's processes. The /auto entries install
+ * nothing there: every test file gets new globals, so capture would install again in each one, and its
+ * request and query hooks (process-wide) would stay subscribed after the file ends.
+ */
+export const inJestFile = (): boolean => Symbol.for('jest-native-promise') in G;
+
 const origin = (f?: Frame) => f && { file: f.file, line: f.line, col: f.col, function: f.function, class: f.class };
 
 /**

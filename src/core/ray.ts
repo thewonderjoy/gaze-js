@@ -38,6 +38,14 @@ interface Shared {
   rate: RateLimiter;
 }
 
+/** Thrown by pause() when "Stop" is pressed in the app, as in gaze-php. In a server it ends that request. */
+export class StopExecutionRequested extends Error {
+  override name = 'StopExecutionRequested';
+  constructor() {
+    super('This exception is thrown because you requested to stop the execution in Gaze.');
+  }
+}
+
 export class RateLimiter {
   #max = 0;
   #per = 0;
@@ -482,15 +490,17 @@ export class Ray {
     return this;
   }
   /**
-   * Pause until "Continue" (or "Stop") in the app. Non-blocking: await it. Resolves 'released' at once
-   * when the app is unreachable, never hangs.
+   * Pause until "Continue" in the app; "Stop" rejects with StopExecutionRequested. Non-blocking: await
+   * it. Resolves 'released' at once when the app is unreachable, never hangs.
    */
   async pause(): Promise<LockState> {
     if (!this.#live()) return 'released';
     const c = this.#s.c;
     this.$emit('lock', { name: this.id });
     if (!(await c.flush())) return 'released';
-    return c.lock(this.id);
+    const state = await c.lock(this.id);
+    if (state == 'stopped') throw new StopExecutionRequested();
+    return state;
   }
   /** Flush, then end the process (Node/Bun/Deno: exit code) or reject (browsers). Await it. Disabled, it does nothing. */
   async die(code = 1): Promise<void> {

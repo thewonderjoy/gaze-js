@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createRay, type RayFn } from '../../src/core/ray.js';
+import { createRay, StopExecutionRequested, type RayFn } from '../../src/core/ray.js';
 import { node } from '../../src/platform/node.js';
 import { VERSION } from '../../src/version.js';
 import { lineOf } from '../helpers.js';
@@ -225,7 +225,7 @@ describe('e2e: native protocol (POST /v1/batch)', () => {
     expect(src).toMatchObject({ project: 'e2e-native', runtime: 'node', client: `@thewonderjoy/gaze-js ${VERSION}`, via: 'native' });
   });
 
-  it('pause() waits for Continue / Stop in the app (GET /v1/locks/{id}?wait=25)', async () => {
+  it('pause() waits for Continue / Stop in the app (GET /v1/locks/{id}?wait=25); Stop throws', async () => {
     const ray = fresh('e2e-native', 'native');
     const first = ray().pause();
     await server.until(() => server.locks.some((l) => l.state == 'active'));
@@ -235,7 +235,7 @@ describe('e2e: native protocol (POST /v1/batch)', () => {
     const second = ray().pause();
     await server.until(() => server.locks.slice(n).some((l) => l.state == 'active'));
     server.command('s');
-    await expect(second).resolves.toBe('stopped');
+    await expect(second).rejects.toBeInstanceOf(StopExecutionRequested);
   });
 });
 
@@ -313,13 +313,20 @@ describe('e2e: the built package in child processes', () => {
     expect(e.origin!.line).toBe(lineOf(fixture, '@dist-esm'));
   });
 
-  it('require(esm) through the exports map, RAY_PORT fallback', async () => {
+  // Node gets the ESM build, so a CommonJS app run with `--import …/auto` has one client. A loader
+  // without require(esm) (Jest) gets the CommonJS copy: Node with it switched off claims the same
+  // conditions (no `module-sync`).
+  it.each<[string, string[], string]>([
+    ['require(esm) of dist/node.js', [], 'node.js'],
+    ['without require(esm), as in Jest: dist/cjs/node.cjs', ['--no-experimental-require-module'], 'cjs/node.cjs'],
+  ])('require() through the exports map, RAY_PORT fallback: %s', async (_, args, resolved) => {
     const fixture = pkg + 'test/e2e/fixtures/require.cjs';
-    const r = await runNode(fixture, { RAY_HOST: '127.0.0.1', RAY_PORT: String(PORT) });
+    const r = await runNode(fixture, { RAY_HOST: '127.0.0.1', RAY_PORT: String(PORT) }, args);
     expect(r.out).toBe('');
     expect(r.code).toBe(0);
-    await server.until(() => !!server.find((e) => e.title == 'from require(esm)'));
-    const e = server.find((e) => e.title == 'from require(esm)')!;
+    const title = `from require: ${resolved}`;
+    await server.until(() => !!server.find((e) => e.title == title));
+    const e = server.find((e) => e.title == title)!;
     expect(e).toMatchObject({ label: 'cjs' });
     expect(e.origin!.line).toBe(lineOf(fixture, '@require-cjs'));
   });
@@ -341,16 +348,17 @@ describe('e2e: the built package in child processes', () => {
     expect(outside[0]!.traceId).toBeFalsy();
   });
 
-  it('NODE_ENV=production (or GAZE_ENABLED=false): the no-op, nothing patched, sent or exited; --conditions=production loads only noop.js', async () => {
+  it('NODE_ENV=production (or GAZE_ENABLED=false): the no-op, nothing patched, sent or exited; --conditions=production loads only noop.js; the CommonJS copy too', async () => {
     const env = { GAZE_HOST: '127.0.0.1', GAZE_PORT: String(PORT) };
     const quiet = { enabled: false, group: 42, console: true, channels: [], store: false, exitHooks: 0 };
-    const fixture = pkg + 'test/e2e/fixtures/production.mjs';
-    for (const [extra, args, resolved] of [
-      [{ NODE_ENV: 'production' }, [], 'node.js'],
-      [{ GAZE_ENABLED: 'false' }, [], 'node.js'],
-      [{ NODE_ENV: 'production' }, ['--conditions=production'], 'noop.js'],
+    for (const [extra, args, resolved, file] of [
+      [{ NODE_ENV: 'production' }, [], 'node.js', 'production.mjs'],
+      [{ GAZE_ENABLED: 'false' }, [], 'node.js', 'production.mjs'],
+      [{ NODE_ENV: 'production' }, ['--conditions=production'], 'noop.js', 'production.mjs'],
+      [{ NODE_ENV: 'production' }, ['--no-experimental-require-module'], 'cjs/node.cjs', 'production.cjs'],
+      [{ GAZE_ENABLED: 'false' }, ['--no-experimental-require-module'], 'cjs/node.cjs', 'production.cjs'],
     ] as const) {
-      const r = await runNode(fixture, { ...env, ...extra }, [...args]);
+      const r = await runNode(pkg + 'test/e2e/fixtures/' + file, { ...env, ...extra }, [...args]);
       expect(r.code, r.out).toBe(0); // die() did not exit
       expect(JSON.parse(r.out)).toEqual({ resolved, ...quiet });
     }
